@@ -18,11 +18,33 @@ Crea una pagina publica o privada con este shortcode:
 [flights_tracker]
 ```
 
+Si la tabla esta en otra base de datos accesible por el mismo usuario MySQL, indica la tabla completa:
+
+```text
+[flights_tracker table="flight_data.vuelos_live"]
+```
+
 Crea una pagina privada para que cada usuario vea sus vuelos guardados:
 
 ```text
 [flights_tracker_saved]
 ```
+
+Y si usas base externa:
+
+```text
+[flights_tracker_saved table="flight_data.vuelos_live"]
+```
+
+## Diagnostico
+
+Para comprobar si WordPress puede leer la tabla, crea una pagina visible solo para administradores o pega temporalmente este shortcode:
+
+```text
+[flights_tracker_debug table="flight_data.vuelos_live"]
+```
+
+El diagnostico muestra la base de datos actual de WordPress, la tabla consultada, el numero de filas encontradas y el ultimo error SQL si lo hay.
 
 ## Tabla leida
 
@@ -74,6 +96,6 @@ Si la tabla real tiene otro nombre, se puede cambiar con:
 
 ```php
 add_filter('flights_tracker_live_table', function () {
-    return 'vuelos_live';
+    return 'flight_data.vuelos_live';
 });
 ```
