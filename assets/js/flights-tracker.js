@@ -102,6 +102,7 @@
     const modalIntro = root.querySelector('[data-ft-modal-intro]');
     const matchList = root.querySelector('[data-ft-match-list]');
     const closeModal = root.querySelector('[data-ft-modal-close]');
+    const table = root.dataset.table || config.table || '';
 
     let currentQuery = '';
     let loading = false;
@@ -115,6 +116,7 @@
         const data = await post('flights_tracker_search', {
           query: currentQuery,
           base: root.dataset.base || config.base || 'AGP',
+          table,
           limit: root.dataset.limit || config.limit || 80,
         });
 
@@ -137,7 +139,7 @@
       matchList.innerHTML = '';
 
       try {
-        const data = await post('flights_tracker_matches', { flightId });
+        const data = await post('flights_tracker_matches', { flightId, table });
         const flight = data.flight;
 
         modalIntro.textContent = `${flight.registration || 'Sin matricula'} · ${flight.flightNumber}. Elige el vuelo relacionado que quieres guardar.`;
@@ -206,6 +208,7 @@
           await post('flights_tracker_save', {
             primaryFlightId: confirm.dataset.ftConfirmSave,
             relatedFlightId: confirm.dataset.ftRelated,
+            table,
           });
           modal.hidden = true;
           setAlert(root, 'Vuelo guardado correctamente.', 'success');
@@ -232,12 +235,13 @@
     const results = root.querySelector('[data-ft-saved-results]');
     const summary = root.querySelector('[data-ft-saved-summary]');
     const refresh = root.querySelector('[data-ft-saved-refresh]');
+    const table = root.dataset.table || config.table || '';
 
     const load = async () => {
       summary.textContent = 'Actualizando tus vuelos guardados...';
 
       try {
-        const data = await post('flights_tracker_saved');
+        const data = await post('flights_tracker_saved', { table });
         results.innerHTML = data.saved.length
           ? data.saved.map(savedCard).join('')
           : '<div class="ft-empty">Aun no tienes vuelos guardados.</div>';
