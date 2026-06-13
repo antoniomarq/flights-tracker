@@ -324,6 +324,15 @@
   margin-top: 4px;
 }
 
+.ft-debug-pre {
+  background: #101828;
+  border-radius: 8px;
+  color: #f8fafc;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 720px) {
   .ft-search__row,
   .ft-grid {
