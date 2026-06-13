@@ -47,21 +47,18 @@
 
     return `
       <article class="ft-card ft-card--${escapeHtml(flight.direction)}">
-        <div class="ft-card__head">
-          <div>
-            <span class="ft-badge ft-badge--${escapeHtml(flight.direction)}">${escapeHtml(flight.directionLabel)}</span>
-            <h3>${escapeHtml(text(flight.flightNumber))}</h3>
-          </div>
+        <div class="ft-card__top">
+          <span class="ft-badge ft-badge--${escapeHtml(flight.direction)}">${escapeHtml(flight.directionLabel)}</span>
+          <strong class="ft-flight-number">${escapeHtml(text(flight.flightNumberDisplay || flight.flightNumber))}</strong>
+          <strong class="ft-card__route">${escapeHtml(text(flight.route))}</strong>
           <div class="ft-card__actions">${saveButton}${removeButton}</div>
         </div>
-        <div class="ft-card__route">${escapeHtml(text(flight.route))}</div>
         <div class="ft-grid">
           <div><span>Compania</span><strong>${escapeHtml(text(flight.airline))}</strong></div>
           <div><span>Matricula</span><strong>${escapeHtml(text(flight.registration))}</strong></div>
-          <div><span>Avion</span><strong>${escapeHtml(text(flight.aircraftType))}</strong></div>
-          <div><span>Programada</span><strong>${escapeHtml(text(flight.scheduledTime))}</strong></div>
-          <div><span>Real/estimada</span><strong>${escapeHtml(text(flight.realTime))}</strong></div>
-          <div><span>Estado</span><strong class="ft-status ft-status--${escapeHtml(flight.statusType)}">${escapeHtml(text(flight.status))}</strong></div>
+          <div><span>Prog.</span><strong>${escapeHtml(text(flight.scheduledTime))}</strong></div>
+          <div><span>Real</span><strong>${escapeHtml(text(flight.realTime))}</strong></div>
+          <div class="ft-grid__wide"><span>Estado</span><strong class="ft-status ft-status--${escapeHtml(flight.statusType)}">${escapeHtml(text(flight.status))}</strong></div>
         </div>
       </article>
     `;
@@ -92,9 +89,30 @@
     alert.hidden = !message;
   };
 
+  const renderPagination = (root, pagination) => {
+    const container = root.querySelector('[data-ft-pagination]');
+    if (!container || !pagination || pagination.pages <= 1) {
+      if (container) {
+        container.hidden = true;
+        container.innerHTML = '';
+      }
+      return;
+    }
+
+    container.hidden = false;
+    container.innerHTML = `
+      <button class="ft-button ft-button--ghost" type="button" data-ft-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''}>Anterior</button>
+      <span>Pagina ${pagination.page} de ${pagination.pages}</span>
+      <button class="ft-button ft-button--ghost" type="button" data-ft-page="${pagination.page + 1}" ${pagination.page >= pagination.pages ? 'disabled' : ''}>Siguiente</button>
+    `;
+  };
+
   const initTracker = (root) => {
     const form = root.querySelector('[data-ft-search-form]');
     const input = root.querySelector('[data-ft-query]');
+    const dateFrom = root.querySelector('[data-ft-date-from]');
+    const dateTo = root.querySelector('[data-ft-date-to]');
+    const direction = root.querySelector('[data-ft-direction]');
     const results = root.querySelector('[data-ft-results]');
     const summary = root.querySelector('[data-ft-summary]');
     const refreshButton = root.querySelector('[data-ft-refresh]');
@@ -103,33 +121,43 @@
     const matchList = root.querySelector('[data-ft-match-list]');
     const closeModal = root.querySelector('[data-ft-modal-close]');
     const table = root.dataset.table || config.table || '';
+    const perPage = root.dataset.perPage || config.perPage || 25;
 
-    let currentQuery = '';
-    let loading = false;
+    const state = {
+      query: '',
+      page: 1,
+      loading: false,
+    };
 
-    const load = async () => {
-      if (loading) return;
-      loading = true;
+    const load = async (page = state.page) => {
+      if (state.loading) return;
+      state.loading = true;
+      state.page = Math.max(1, Number(page) || 1);
       summary.textContent = 'Actualizando vuelos...';
 
       try {
         const data = await post('flights_tracker_search', {
-          query: currentQuery,
+          query: state.query,
           base: root.dataset.base || config.base || 'AGP',
           table,
-          limit: root.dataset.limit || config.limit || 80,
+          direction: direction.value,
+          dateFrom: dateFrom.value,
+          dateTo: dateTo.value,
+          page: state.page,
+          perPage,
         });
 
         results.innerHTML = data.flights.length
           ? data.flights.map((flight) => flightCard(flight, { canSave: true })).join('')
           : '<div class="ft-empty">No hay vuelos para esta busqueda.</div>';
-        summary.textContent = `${data.flights.length} vuelos · actualizado ${data.serverTime}`;
+        summary.textContent = `${data.pagination.total} vuelos · ${data.rangeLabel} · actualizado ${data.serverTime}`;
+        renderPagination(root, data.pagination);
         setAlert(root, '');
       } catch (error) {
         summary.textContent = 'No se han podido actualizar los vuelos.';
         setAlert(root, error.message, 'error');
       } finally {
-        loading = false;
+        state.loading = false;
       }
     };
 
@@ -177,11 +205,18 @@
 
     form.addEventListener('submit', (event) => {
       event.preventDefault();
-      currentQuery = input.value.trim();
-      load();
+      state.query = input.value.trim();
+      load(1);
     });
 
-    refreshButton.addEventListener('click', load);
+    [dateFrom, dateTo, direction].forEach((control) => {
+      control.addEventListener('change', () => {
+        state.query = input.value.trim();
+        load(1);
+      });
+    });
+
+    refreshButton.addEventListener('click', () => load(state.page));
     closeModal.addEventListener('click', () => {
       modal.hidden = true;
     });
@@ -195,6 +230,11 @@
     root.addEventListener('click', async (event) => {
       const save = event.target.closest('[data-ft-save]');
       const confirm = event.target.closest('[data-ft-confirm-save]');
+      const page = event.target.closest('[data-ft-page]');
+
+      if (page) {
+        load(page.dataset.ftPage);
+      }
 
       if (save) {
         openMatches(save.dataset.ftSave);
@@ -221,14 +261,14 @@
     });
 
     input.addEventListener('input', () => {
-      if (input.value.trim() === '' && currentQuery !== '') {
-        currentQuery = '';
-        load();
+      if (input.value.trim() === '' && state.query !== '') {
+        state.query = '';
+        load(1);
       }
     });
 
-    load();
-    window.setInterval(load, Number(config.refreshMs || 60000));
+    load(1);
+    window.setInterval(() => load(state.page), Number(config.refreshMs || 60000));
   };
 
   const initSaved = (root) => {

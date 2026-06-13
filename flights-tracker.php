@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Flights Tracker
- * Description: Buscador vivo de vuelos con guardado por usuario desde la tabla vuelos_live.
- * Version: 0.2.0
+ * Description: Buscador móvil de vuelos con guardado por usuario desde la tabla vuelos_live.
+ * Version: 0.3.0
  * Author: Antonio Marquez
  * Text Domain: flights-tracker
  */
@@ -13,9 +13,10 @@ if (!defined('ABSPATH')) {
 
 final class Flights_Tracker_Plugin
 {
-    private const VERSION = '0.2.0';
+    private const VERSION = '0.3.0';
     private const LIVE_TABLE = 'vuelos_live';
     private const NONCE_ACTION = 'flights_tracker_nonce';
+    private const PER_PAGE = 25;
 
     public static function init(): void
     {
@@ -75,27 +76,47 @@ final class Flights_Tracker_Plugin
     {
         $atts = shortcode_atts([
             'base' => 'AGP',
-            'limit' => 80,
             'refresh' => 60,
             'table' => '',
+            'per_page' => self::PER_PAGE,
         ], $atts, 'flights_tracker');
 
         $base = strtoupper(sanitize_text_field($atts['base']));
-        $limit = max(1, min(200, absint($atts['limit'])));
         $refresh = max(15, absint($atts['refresh']));
         $table = $this->sanitize_table_name((string) $atts['table']);
-
-        $this->enqueue_assets($base, $limit, $refresh, $table);
+        $per_page = max(5, min(50, absint($atts['per_page'])));
+        $today = wp_date('Y-m-d');
         $search_id = wp_unique_id('ft-query-');
+
+        $this->enqueue_assets($base, $per_page, $refresh, $table);
 
         ob_start();
         ?>
-        <div class="ft-app" data-ft-app data-base="<?php echo esc_attr($base); ?>" data-limit="<?php echo esc_attr((string) $limit); ?>" data-table="<?php echo esc_attr($table); ?>">
+        <div class="ft-app" data-ft-app data-base="<?php echo esc_attr($base); ?>" data-per-page="<?php echo esc_attr((string) $per_page); ?>" data-table="<?php echo esc_attr($table); ?>">
             <form class="ft-search" data-ft-search-form>
                 <label class="ft-search__label" for="<?php echo esc_attr($search_id); ?>">Buscar vuelo</label>
                 <div class="ft-search__row">
                     <input id="<?php echo esc_attr($search_id); ?>" class="ft-search__input" data-ft-query type="search" placeholder="Matricula, vuelo o compania" autocomplete="off">
                     <button class="ft-button ft-button--primary" type="submit">Buscar</button>
+                </div>
+
+                <div class="ft-filters">
+                    <label>
+                        <span>Desde</span>
+                        <input type="date" data-ft-date-from value="<?php echo esc_attr($today); ?>">
+                    </label>
+                    <label>
+                        <span>Hasta</span>
+                        <input type="date" data-ft-date-to value="<?php echo esc_attr($today); ?>">
+                    </label>
+                    <label>
+                        <span>Tipo</span>
+                        <select data-ft-direction>
+                            <option value="all">Llegada/salida</option>
+                            <option value="arrival">Llegada</option>
+                            <option value="departure">Salida</option>
+                        </select>
+                    </label>
                 </div>
             </form>
 
@@ -106,6 +127,7 @@ final class Flights_Tracker_Plugin
 
             <div class="ft-alert" data-ft-alert hidden></div>
             <div class="ft-list" data-ft-results></div>
+            <div class="ft-pagination" data-ft-pagination hidden></div>
 
             <div class="ft-modal" data-ft-modal hidden>
                 <div class="ft-modal__panel" role="dialog" aria-modal="true" aria-labelledby="ft-modal-title">
@@ -130,7 +152,7 @@ final class Flights_Tracker_Plugin
         $atts = shortcode_atts(['table' => ''], $atts, 'flights_tracker_saved');
         $table = $this->sanitize_table_name((string) $atts['table']);
 
-        $this->enqueue_assets('AGP', 80, 60, $table);
+        $this->enqueue_assets('AGP', self::PER_PAGE, 60, $table);
 
         ob_start();
         ?>
@@ -153,10 +175,7 @@ final class Flights_Tracker_Plugin
             return '';
         }
 
-        $atts = shortcode_atts([
-            'base' => 'AGP',
-            'table' => '',
-        ], $atts, 'flights_tracker_debug');
+        $atts = shortcode_atts(['base' => 'AGP', 'table' => ''], $atts, 'flights_tracker_debug');
 
         global $wpdb;
 
@@ -207,16 +226,18 @@ final class Flights_Tracker_Plugin
     {
         $this->verify_nonce();
 
-        $query = isset($_POST['query']) ? sanitize_text_field(wp_unslash($_POST['query'])) : '';
-        $base = isset($_POST['base']) ? strtoupper(sanitize_text_field(wp_unslash($_POST['base']))) : 'AGP';
-        $table = isset($_POST['table']) ? sanitize_text_field(wp_unslash($_POST['table'])) : '';
-        $limit = isset($_POST['limit']) ? absint($_POST['limit']) : 80;
-        $limit = max(1, min(200, $limit));
+        $filters = [
+            'query' => isset($_POST['query']) ? sanitize_text_field(wp_unslash($_POST['query'])) : '',
+            'base' => isset($_POST['base']) ? strtoupper(sanitize_text_field(wp_unslash($_POST['base']))) : 'AGP',
+            'table' => isset($_POST['table']) ? sanitize_text_field(wp_unslash($_POST['table'])) : '',
+            'direction' => isset($_POST['direction']) ? sanitize_text_field(wp_unslash($_POST['direction'])) : 'all',
+            'date_from' => isset($_POST['dateFrom']) ? sanitize_text_field(wp_unslash($_POST['dateFrom'])) : wp_date('Y-m-d'),
+            'date_to' => isset($_POST['dateTo']) ? sanitize_text_field(wp_unslash($_POST['dateTo'])) : wp_date('Y-m-d'),
+            'page' => isset($_POST['page']) ? max(1, absint($_POST['page'])) : 1,
+            'per_page' => isset($_POST['perPage']) ? max(5, min(50, absint($_POST['perPage']))) : self::PER_PAGE,
+        ];
 
-        wp_send_json_success([
-            'flights' => $this->find_flights($base, $query, $limit, $table),
-            'serverTime' => wp_date('H:i:s'),
-        ]);
+        wp_send_json_success($this->find_flights($filters));
     }
 
     public function ajax_matches(): void
@@ -327,7 +348,7 @@ final class Flights_Tracker_Plugin
         wp_send_json_success(['message' => 'Vuelo eliminado.']);
     }
 
-    private function enqueue_assets(string $base, int $limit, int $refresh, string $table = ''): void
+    private function enqueue_assets(string $base, int $per_page, int $refresh, string $table = ''): void
     {
         wp_enqueue_style('flights-tracker');
         wp_enqueue_script('flights-tracker');
@@ -337,7 +358,7 @@ final class Flights_Tracker_Plugin
             'nonce' => wp_create_nonce(self::NONCE_ACTION),
             'base' => $base,
             'table' => $table,
-            'limit' => $limit,
+            'perPage' => $per_page,
             'refreshMs' => $refresh * 1000,
             'isLoggedIn' => is_user_logged_in(),
             'loginUrl' => wp_login_url(get_permalink()),
@@ -353,28 +374,56 @@ final class Flights_Tracker_Plugin
         }
     }
 
-    private function find_flights(string $base, string $query, int $limit, string $table_override = ''): array
+    private function find_flights(array $filters): array
     {
         global $wpdb;
 
-        $table = $this->live_table($table_override);
+        $table = $this->live_table($filters['table']);
         $where = ['base_iata = %s'];
-        $params = [$base];
+        $params = [$filters['base']];
 
-        if ($query !== '') {
-            $like = '%' . $wpdb->esc_like($query) . '%';
+        $range = $this->date_range($filters['date_from'], $filters['date_to']);
+        $where[] = 'COALESCE(hora_real, hora_programada) >= %s';
+        $where[] = 'COALESCE(hora_real, hora_programada) < %s';
+        array_push($params, $range['start'], $range['end']);
+
+        if ($filters['direction'] === 'arrival' || $filters['direction'] === 'departure') {
+            $where[] = 'direction = %s';
+            $params[] = $filters['direction'];
+        }
+
+        if ($filters['query'] !== '') {
+            $like = '%' . $wpdb->esc_like($filters['query']) . '%';
             $where[] = '(registration LIKE %s OR numero_vuelo LIKE %s OR aerolinea LIKE %s)';
             array_push($params, $like, $like, $like);
         }
 
-        $params[] = $limit;
-        $sql = $wpdb->prepare(
-            "SELECT * FROM {$table} WHERE " . implode(' AND ', $where) . " ORDER BY COALESCE(hora_real, hora_programada), hora_programada, id LIMIT %d",
-            $params
-        );
-        $rows = $wpdb->get_results($sql, ARRAY_A);
+        $where_sql = implode(' AND ', $where);
+        $total = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where_sql}", $params));
+        $pages = max(1, (int) ceil($total / $filters['per_page']));
+        $page = min((int) $filters['page'], $pages);
+        $offset = ($page - 1) * (int) $filters['per_page'];
+        $query_params = array_merge($params, [(int) $filters['per_page'], $offset]);
 
-        return is_array($rows) ? array_map([$this, 'format_flight'], $rows) : [];
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$table}
+             WHERE {$where_sql}
+             ORDER BY COALESCE(hora_real, hora_programada), hora_programada, id
+             LIMIT %d OFFSET %d",
+            $query_params
+        ), ARRAY_A);
+
+        return [
+            'flights' => is_array($rows) ? array_map([$this, 'format_flight'], $rows) : [],
+            'pagination' => [
+                'page' => $page,
+                'perPage' => (int) $filters['per_page'],
+                'pages' => $pages,
+                'total' => $total,
+            ],
+            'serverTime' => wp_date('H:i:s'),
+            'rangeLabel' => $this->range_label($range),
+        ];
     }
 
     private function get_flight(int $flight_id, string $table_override = ''): ?array
@@ -454,13 +503,15 @@ final class Flights_Tracker_Plugin
     private function format_flight(array $row): array
     {
         $direction = (string) ($row['direction'] ?? '');
+        $flight_number = (string) ($row['numero_vuelo'] ?? '');
 
         return [
             'id' => (int) $row['id'],
             'baseIata' => (string) ($row['base_iata'] ?? ''),
             'direction' => $direction,
             'directionLabel' => $direction === 'arrival' ? 'Llegada' : 'Salida',
-            'flightNumber' => (string) ($row['numero_vuelo'] ?? ''),
+            'flightNumber' => $flight_number,
+            'flightNumberDisplay' => $this->short_flight_number($flight_number),
             'airline' => (string) ($row['aerolinea'] ?? ''),
             'origin' => (string) ($row['origen'] ?? ''),
             'destination' => (string) ($row['destino'] ?? ''),
@@ -484,6 +535,18 @@ final class Flights_Tracker_Plugin
         }
 
         return $base . ' -> ' . trim((string) ($row['destino'] ?? ''));
+    }
+
+    private function short_flight_number(string $flight_number): string
+    {
+        preg_match_all('/\d+/', $flight_number, $matches);
+        $digits = implode('', $matches[0] ?? []);
+
+        if ($digits === '') {
+            return $flight_number;
+        }
+
+        return substr($digits, -4);
     }
 
     private function status_type(string $status): string
@@ -529,7 +592,43 @@ final class Flights_Tracker_Plugin
             $timestamp = strtotime((string) $value);
         }
 
-        return wp_date('d/m/Y H:i', $timestamp);
+        $flight_date = wp_date('Y-m-d', $timestamp);
+        $today = wp_date('Y-m-d');
+
+        return $flight_date === $today ? wp_date('H:i', $timestamp) : wp_date('d/m/y H:i', $timestamp);
+    }
+
+    private function date_range(string $from, string $to): array
+    {
+        $today = wp_date('Y-m-d');
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+            $from = $today;
+        }
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            $to = $from;
+        }
+
+        if ($to < $from) {
+            $to = $from;
+        }
+
+        return [
+            'from' => $from,
+            'to' => $to,
+            'start' => $from . ' 00:00:00',
+            'end' => gmdate('Y-m-d H:i:s', strtotime($to . ' 00:00:00 UTC') + DAY_IN_SECONDS),
+        ];
+    }
+
+    private function range_label(array $range): string
+    {
+        if ($range['from'] === $range['to']) {
+            return wp_date('d/m/y', strtotime($range['from'] . ' 00:00:00'));
+        }
+
+        return wp_date('d/m/y', strtotime($range['from'] . ' 00:00:00')) . ' - ' . wp_date('d/m/y', strtotime($range['to'] . ' 00:00:00'));
     }
 
     private function best_time_for_query(array $flight): string

@@ -1,58 +1,81 @@
 # Flights Tracker
 
-Plugin de WordPress para consultar la tabla existente `vuelos_live`, mostrar vuelos en tarjetas y permitir que cada usuario conectado guarde combinaciones de vuelos relacionados por matricula.
+Plugin de WordPress para consultar la tabla existente `vuelos_live`, mostrar vuelos en tarjetas optimizadas para móvil y permitir que cada usuario conectado guarde combinaciones de vuelos relacionados por matrícula.
 
-## Instalacion desde GitHub
+## Instalación
 
-1. En GitHub, abre el boton `Code`.
-2. Pulsa `Download ZIP`.
-3. En WordPress, ve a `Plugins > Anadir nuevo > Subir plugin`.
-4. Sube el ZIP descargado.
-5. Activa el plugin `Flights Tracker`.
+1. Descarga el ZIP desde GitHub.
+2. En WordPress, ve a `Plugins > Añadir nuevo > Subir plugin`.
+3. Sube el ZIP.
+4. Activa el plugin `Flights Tracker`.
 
 ## Uso
 
-Crea una pagina publica o privada con este shortcode:
-
-```text
-[flights_tracker]
-```
-
-Si la tabla esta en otra base de datos accesible por el mismo usuario MySQL, indica la tabla completa:
+Página principal del buscador:
 
 ```text
 [flights_tracker table="flight_data.vuelos_live"]
 ```
 
-Crea una pagina privada para que cada usuario vea sus vuelos guardados:
-
-```text
-[flights_tracker_saved]
-```
-
-Y si usas base externa:
+Página privada para vuelos guardados:
 
 ```text
 [flights_tracker_saved table="flight_data.vuelos_live"]
 ```
 
-## Diagnostico
+El buscador muestra por defecto vuelos del día actual, permite filtrar por rango de fechas, llegada/salida y busca por matrícula, número de vuelo o compañía. La paginación muestra 25 vuelos por página.
 
-Para comprobar si WordPress puede leer la tabla, crea una pagina visible solo para administradores o pega temporalmente este shortcode:
+## Permisos MySQL
+
+Si WordPress y los vuelos están en bases independientes dentro del mismo servidor MariaDB/MySQL, el usuario de WordPress necesita permiso de lectura sobre la tabla de vuelos.
+
+Ejemplo Docker habitual:
+
+```text
+Base WordPress: wordpress
+Usuario WordPress: wpuser
+Base vuelos: flight_data
+Tabla vuelos: vuelos_live
+```
+
+En phpMyAdmin entra como `root`, abre la pestaña SQL y ejecuta:
+
+```sql
+GRANT SELECT ON `flight_data`.`vuelos_live` TO 'wpuser'@'%';
+FLUSH PRIVILEGES;
+```
+
+Para comprobarlo:
+
+```sql
+SHOW GRANTS FOR 'wpuser'@'%';
+```
+
+Debe aparecer un permiso parecido a:
+
+```sql
+GRANT SELECT ON `flight_data`.`vuelos_live` TO `wpuser`@`%`
+```
+
+Sin este permiso, el plugin puede cargar visualmente, pero mostrará `0 vuelos` o dará error SQL porque WordPress no puede leer la segunda base de datos.
+
+## Diagnóstico
+
+Para comprobar si WordPress puede leer la tabla, crea una página visible solo para administradores o pega temporalmente este shortcode:
 
 ```text
 [flights_tracker_debug table="flight_data.vuelos_live"]
 ```
 
-El diagnostico muestra la base de datos actual de WordPress, la tabla consultada, el numero de filas encontradas y el ultimo error SQL si lo hay.
+El diagnóstico muestra:
 
-## Tabla leida
+- base de datos actual de WordPress
+- tabla consultada
+- total de filas encontradas
+- total de vuelos de `AGP`
+- último error SQL, si existe
 
-El plugin consulta directamente la tabla:
-
-```text
-vuelos_live
-```
+## Tabla Leída
 
 Campos usados:
 
@@ -72,27 +95,15 @@ registration
 last_seen_at
 ```
 
-## Funcionamiento
-
-- Por defecto muestra vuelos de `AGP`.
-- El buscador filtra por matricula, numero de vuelo y compania.
-- El listado se refresca automaticamente cada 60 segundos.
-- Las llegadas se muestran en celeste suave.
-- Las salidas se muestran en blanco.
-- Al pulsar `Guardar`, el plugin busca vuelos con la misma matricula:
-  - Si el vuelo actual es una llegada, muestra salidas posteriores.
-  - Si el vuelo actual es una salida, muestra llegadas anteriores.
-- Cada usuario de WordPress solo ve sus propios vuelos guardados.
-
 ## Notas
 
-El plugin asume que las horas de `vuelos_live` estan guardadas en UTC y las muestra en la zona horaria configurada en WordPress. Si tu tabla guarda hora local directamente, se puede desactivar con este filtro:
+El plugin asume que las horas de `vuelos_live` están guardadas en UTC y las muestra en la zona horaria configurada en WordPress. Si tu tabla guarda hora local directamente, se puede desactivar con este filtro:
 
 ```php
 add_filter('flights_tracker_times_are_utc', '__return_false');
 ```
 
-Si la tabla real tiene otro nombre, se puede cambiar con:
+Si prefieres fijar la tabla desde código en vez de usar el atributo `table`, puedes usar:
 
 ```php
 add_filter('flights_tracker_live_table', function () {
