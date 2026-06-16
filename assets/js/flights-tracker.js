@@ -64,20 +64,45 @@
     `;
   };
 
-  const savedCard = (item) => {
-    const related = item.related
-      ? `<div class="ft-pair__divider">Relacionado</div>${flightCard(item.related, {})}`
-      : '<div class="ft-empty ft-empty--small">No hay vuelo relacionado guardado.</div>';
+  const savedCard = (item, openIds = new Set()) => {
+    const arrival = item.arrival ? flightCard(item.arrival, {}) : '';
+    const departure = item.departure ? flightCard(item.departure, {}) : '';
+    const fallback = !arrival && !departure ? '<div class="ft-empty ft-empty--small">No hay vuelos disponibles para este guardado.</div>' : '';
+    const arrivalNumber = item.arrival?.flightNumberDisplay || item.arrival?.flightNumber || '-';
+    const departureNumber = item.departure?.flightNumberDisplay || item.departure?.flightNumber || '-';
+    const numbers = item.arrival && item.departure
+      ? `${arrivalNumber} → ${departureNumber}`
+      : `${arrivalNumber !== '-' ? arrivalNumber : departureNumber}`;
+    const airline = item.arrival?.airline || item.departure?.airline || item.primary?.airline || item.related?.airline || '-';
+    const arrivalRealTime = item.arrival?.realTime || '-';
+    const completedClass = item.completed ? ' ft-pair--completed' : '';
+    const completedText = item.completed ? 'Pendiente' : 'Realizado';
+    const completedValue = item.completed ? '0' : '1';
+    const completedInfo = item.completed
+      ? `<span class="ft-pair__completed">Realizado ${escapeHtml(text(item.completedAt, 'sin hora'))}</span>`
+      : '<span class="ft-pair__completed">Pendiente</span>';
+    const openAttribute = openIds.has(String(item.id)) ? ' open' : '';
 
     return `
-      <section class="ft-pair" data-ft-saved-item="${item.id}">
-        <div class="ft-pair__meta">
+      <details class="ft-pair${completedClass}" data-ft-saved-item="${item.id}"${openAttribute}>
+        <summary class="ft-pair__summary">
           <span>Guardado ${escapeHtml(text(item.createdAt))}</span>
-          <button class="ft-button ft-button--danger" type="button" data-ft-delete-saved="${item.id}">Eliminar</button>
+          <span>${escapeHtml(text(airline))}</span>
+          <strong>${escapeHtml(numbers)}</strong>
+          <span>Llegada real ${escapeHtml(text(arrivalRealTime))}</span>
+          ${completedInfo}
+          <span class="ft-pair__toggle">Desplegar</span>
+        </summary>
+        <div class="ft-pair__body">
+          ${arrival}
+          ${departure}
+          ${fallback}
+          <div class="ft-pair__actions">
+            <button class="ft-button ft-button--danger" type="button" data-ft-delete-saved="${item.id}">Eliminar</button>
+            <button class="ft-button ft-button--done" type="button" data-ft-complete-saved="${item.id}" data-ft-completed="${completedValue}">${completedText}</button>
+          </div>
         </div>
-        ${flightCard(item.primary, {})}
-        ${related}
-      </section>
+      </details>
     `;
   };
 
@@ -90,21 +115,26 @@
   };
 
   const renderPagination = (root, pagination) => {
-    const container = root.querySelector('[data-ft-pagination]');
-    if (!container || !pagination || pagination.pages <= 1) {
-      if (container) {
+    const containers = root.querySelectorAll('[data-ft-pagination]');
+    if (!containers.length) return;
+
+    if (!pagination || pagination.pages <= 1) {
+      containers.forEach((container) => {
         container.hidden = true;
         container.innerHTML = '';
-      }
+      });
       return;
     }
 
-    container.hidden = false;
-    container.innerHTML = `
-      <button class="ft-button ft-button--ghost" type="button" data-ft-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''}>Anterior</button>
+    const markup = `
+      <button class="ft-button ft-button--ghost" type="button" data-ft-offset="${pagination.previousOffset}" ${pagination.offset <= 0 ? 'disabled' : ''}>Anterior</button>
       <span>Pagina ${pagination.page} de ${pagination.pages}</span>
-      <button class="ft-button ft-button--ghost" type="button" data-ft-page="${pagination.page + 1}" ${pagination.page >= pagination.pages ? 'disabled' : ''}>Siguiente</button>
+      <button class="ft-button ft-button--ghost" type="button" data-ft-offset="${pagination.nextOffset}" ${pagination.nextOffset >= pagination.total ? 'disabled' : ''}>Siguiente</button>
     `;
+    containers.forEach((container) => {
+      container.hidden = false;
+      container.innerHTML = markup;
+    });
   };
 
   const initTracker = (root) => {
@@ -126,13 +156,21 @@
     const state = {
       query: '',
       page: 1,
+      offset: null,
       loading: false,
     };
 
-    const load = async (page = state.page) => {
+    const load = async (page = state.page, options = {}) => {
       if (state.loading) return;
       state.loading = true;
-      state.page = Math.max(1, Number(page) || 1);
+
+      if (options.resetOffset) {
+        state.offset = null;
+      } else if (Object.prototype.hasOwnProperty.call(options, 'offset')) {
+        state.offset = Math.max(0, Number(options.offset) || 0);
+      }
+
+      state.page = Math.max(1, Number(page) || state.page || 1);
       summary.textContent = 'Actualizando vuelos...';
 
       try {
@@ -145,12 +183,16 @@
           dateTo: dateTo.value,
           page: state.page,
           perPage,
+          offset: state.offset === null ? '' : state.offset,
+          initialPage: options.initialPage ? '1' : '0',
         });
 
         results.innerHTML = data.flights.length
           ? data.flights.map((flight) => flightCard(flight, { canSave: true })).join('')
           : '<div class="ft-empty">No hay vuelos para esta busqueda.</div>';
         summary.textContent = `${data.pagination.total} vuelos · ${data.rangeLabel} · actualizado ${data.serverTime}`;
+        state.page = data.pagination.page;
+        state.offset = data.pagination.offset;
         renderPagination(root, data.pagination);
         setAlert(root, '');
       } catch (error) {
@@ -206,13 +248,13 @@
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       state.query = input.value.trim();
-      load(1);
+      load(1, { resetOffset: true });
     });
 
     [dateFrom, dateTo, direction].forEach((control) => {
       control.addEventListener('change', () => {
         state.query = input.value.trim();
-        load(1);
+        load(1, { resetOffset: true });
       });
     });
 
@@ -231,9 +273,14 @@
       const save = event.target.closest('[data-ft-save]');
       const confirm = event.target.closest('[data-ft-confirm-save]');
       const page = event.target.closest('[data-ft-page]');
+      const offset = event.target.closest('[data-ft-offset]');
 
       if (page) {
-        load(page.dataset.ftPage);
+        load(page.dataset.ftPage, { resetOffset: true });
+      }
+
+      if (offset) {
+        load(state.page, { offset: offset.dataset.ftOffset });
       }
 
       if (save) {
@@ -263,11 +310,11 @@
     input.addEventListener('input', () => {
       if (input.value.trim() === '' && state.query !== '') {
         state.query = '';
-        load(1);
+        load(1, { resetOffset: true });
       }
     });
 
-    load(1);
+    load(1, { initialPage: true });
     window.setInterval(() => load(state.page), Number(config.refreshMs || 60000));
   };
 
@@ -275,15 +322,20 @@
     const results = root.querySelector('[data-ft-saved-results]');
     const summary = root.querySelector('[data-ft-saved-summary]');
     const refresh = root.querySelector('[data-ft-saved-refresh]');
+    const pdf = root.querySelector('[data-ft-saved-pdf]');
     const table = root.dataset.table || config.table || '';
+
+    const openSavedIds = () =>
+      new Set(Array.from(results.querySelectorAll('[data-ft-saved-item][open]')).map((item) => item.dataset.ftSavedItem));
 
     const load = async () => {
       summary.textContent = 'Actualizando tus vuelos guardados...';
+      const openIds = openSavedIds();
 
       try {
         const data = await post('flights_tracker_saved', { table });
         results.innerHTML = data.saved.length
-          ? data.saved.map(savedCard).join('')
+          ? data.saved.map((item) => savedCard(item, openIds)).join('')
           : '<div class="ft-empty">Aun no tienes vuelos guardados.</div>';
         summary.textContent = `${data.saved.length} guardados · actualizado ${data.serverTime}`;
         setAlert(root, '');
@@ -295,22 +347,52 @@
 
     root.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-ft-delete-saved]');
-      if (!button) return;
+      const complete = event.target.closest('[data-ft-complete-saved]');
 
-      button.disabled = true;
-      button.textContent = 'Eliminando...';
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Eliminando...';
 
-      try {
-        await post('flights_tracker_delete_saved', { savedId: button.dataset.ftDeleteSaved });
-        load();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = 'Eliminar';
-        setAlert(root, error.message, 'error');
+        try {
+          await post('flights_tracker_delete_saved', { savedId: button.dataset.ftDeleteSaved });
+          load();
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = 'Eliminar';
+          setAlert(root, error.message, 'error');
+        }
+      }
+
+      if (complete) {
+        complete.disabled = true;
+        complete.textContent = complete.dataset.ftCompleted === '1' ? 'Marcando...' : 'Cambiando...';
+
+        try {
+          await post('flights_tracker_complete_saved', {
+            savedId: complete.dataset.ftCompleteSaved,
+            completed: complete.dataset.ftCompleted,
+          });
+          load();
+        } catch (error) {
+          complete.disabled = false;
+          complete.textContent = complete.dataset.ftCompleted === '1' ? 'Realizado' : 'Pendiente';
+          setAlert(root, error.message, 'error');
+        }
       }
     });
 
     refresh.addEventListener('click', load);
+
+    if (pdf) {
+      pdf.addEventListener('click', () => {
+        const url = new URL(config.ajaxUrl);
+        url.searchParams.set('action', 'flights_tracker_download_saved_pdf');
+        url.searchParams.set('nonce', config.nonce);
+        url.searchParams.set('table', table);
+        window.location.href = url.toString();
+      });
+    }
+
     load();
     window.setInterval(load, Number(config.refreshMs || 60000));
   };

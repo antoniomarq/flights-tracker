@@ -4,10 +4,20 @@ Plugin de WordPress para consultar la tabla existente `vuelos_live`, mostrar vue
 
 ## Instalación
 
-1. Descarga el ZIP desde GitHub.
+1. Descarga `flights-tracker-mobile-0.3.5-wordpress.zip` desde este repositorio.
 2. En WordPress, ve a `Plugins > Añadir nuevo > Subir plugin`.
 3. Sube el ZIP.
 4. Activa el plugin `Flights Tracker`.
+
+## Descarga
+
+El archivo listo para instalar en WordPress es:
+
+```text
+flights-tracker-mobile-0.3.5-wordpress.zip
+```
+
+No uses el ZIP automático de GitHub si quieres instalarlo directamente en WordPress; usa el ZIP anterior, que ya contiene la carpeta del plugin con la estructura correcta.
 
 ## Uso
 
@@ -23,7 +33,11 @@ Página privada para vuelos guardados:
 [flights_tracker_saved table="flight_data.vuelos_live"]
 ```
 
-El buscador muestra por defecto vuelos del día actual, permite filtrar por rango de fechas, llegada/salida y busca por matrícula, número de vuelo o compañía. La paginación muestra 25 vuelos por página.
+El buscador muestra por defecto vuelos del día actual empezando desde 30 minutos antes de la hora configurada en WordPress, permite filtrar por rango de fechas, llegada/salida y busca por matrícula, número de vuelo o compañía. La paginación muestra 25 vuelos por página y ofrece controles arriba y abajo de la lista.
+
+Los vuelos guardados se muestran plegados por defecto con hora de guardado, compañía, número de llegada-salida y hora real de llegada. Al desplegarlos, la llegada aparece arriba y la salida abajo; si se actualizan mientras están abiertos, permanecen desplegados. El botón `Realizado` marca el bloque en verde claro y registra la hora local configurada en WordPress. Esa hora aparece en pantalla y queda incluida en el PDF descargable de `Mis vuelos`.
+
+El botón `Descargar PDF` genera un archivo con los vuelos guardados del usuario conectado, indicando cuáles están pendientes y cuáles están realizados con su hora local de realización. El PDF se presenta en formato tabla e incluye hora programada y hora real para facilitar el registro.
 
 ## Permisos MySQL
 
