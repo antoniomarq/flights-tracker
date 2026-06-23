@@ -37,6 +37,44 @@
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
 
+  const preferredTime = (flight) => flight?.realTime || flight?.scheduledTime || '-';
+
+  const compactTime = (flight) => {
+    if (flight?.direction === 'arrival' && flight?.statusType === 'landed') {
+      return { label: 'Landed', type: 'landed' };
+    }
+
+    return { label: preferredTime(flight), type: '' };
+  };
+
+  const compactFlightsTable = (item) => {
+    const flights = [item.arrival, item.departure].filter(Boolean);
+
+    if (!flights.length) {
+      return '';
+    }
+
+    const columnClass = flights.length === 1 ? 'ft-pair__flight-table--one' : 'ft-pair__flight-table--two';
+    const numberCells = flights
+      .map((flight) => `<span class="ft-pair__flight-number">${escapeHtml(text(flight.flightNumberDisplay || flight.flightNumber))}</span>`)
+      .join('');
+    const timeCells = flights
+      .map((flight) => {
+        const time = compactTime(flight);
+        const typeClass = time.type ? ` ft-pair__flight-time--${escapeHtml(time.type)}` : '';
+
+        return `<span class="ft-pair__flight-time${typeClass}">${escapeHtml(text(time.label))}</span>`;
+      })
+      .join('');
+
+    return `
+      <span class="ft-pair__flight-table ${columnClass}" aria-label="Vuelos y horarios">
+        ${numberCells}
+        ${timeCells}
+      </span>
+    `;
+  };
+
   const flightCard = (flight, options = {}) => {
     const saveButton = options.canSave
       ? `<button class="ft-button ft-button--save" type="button" data-ft-save="${flight.id}">Guardar</button>`
@@ -68,13 +106,9 @@
     const arrival = item.arrival ? flightCard(item.arrival, {}) : '';
     const departure = item.departure ? flightCard(item.departure, {}) : '';
     const fallback = !arrival && !departure ? '<div class="ft-empty ft-empty--small">No hay vuelos disponibles para este guardado.</div>' : '';
-    const arrivalNumber = item.arrival?.flightNumberDisplay || item.arrival?.flightNumber || '-';
-    const departureNumber = item.departure?.flightNumberDisplay || item.departure?.flightNumber || '-';
-    const numbers = item.arrival && item.departure
-      ? `${arrivalNumber} → ${departureNumber}`
-      : `${arrivalNumber !== '-' ? arrivalNumber : departureNumber}`;
+    const compactTable = compactFlightsTable(item);
     const airline = item.arrival?.airline || item.departure?.airline || item.primary?.airline || item.related?.airline || '-';
-    const arrivalRealTime = item.arrival?.realTime || '-';
+    const registration = item.arrival?.registration || item.departure?.registration || item.primary?.registration || item.related?.registration || '-';
     const completedClass = item.completed ? ' ft-pair--completed' : '';
     const completedText = item.completed ? 'Pendiente' : 'Realizado';
     const completedValue = item.completed ? '0' : '1';
@@ -86,10 +120,10 @@
     return `
       <details class="ft-pair${completedClass}" data-ft-saved-item="${item.id}"${openAttribute}>
         <summary class="ft-pair__summary">
-          <span>Guardado ${escapeHtml(text(item.createdAt))}</span>
-          <span>${escapeHtml(text(airline))}</span>
-          <strong>${escapeHtml(numbers)}</strong>
-          <span>Llegada real ${escapeHtml(text(arrivalRealTime))}</span>
+          <span class="ft-pair__saved-at">Guardado ${escapeHtml(text(item.createdAt))}</span>
+          <span class="ft-pair__airline">${escapeHtml(text(airline))}</span>
+          ${compactTable}
+          <strong class="ft-pair__registration">${escapeHtml(text(registration))}</strong>
           ${completedInfo}
           <span class="ft-pair__toggle">Desplegar</span>
         </summary>
@@ -100,6 +134,44 @@
           <div class="ft-pair__actions">
             <button class="ft-button ft-button--danger" type="button" data-ft-delete-saved="${item.id}">Eliminar</button>
             <button class="ft-button ft-button--done" type="button" data-ft-complete-saved="${item.id}" data-ft-completed="${completedValue}">${completedText}</button>
+          </div>
+        </div>
+      </details>
+    `;
+  };
+
+  const archivedCard = (item, openIds = new Set()) => {
+    const arrival = item.arrival ? flightCard(item.arrival, {}) : '';
+    const departure = item.departure ? flightCard(item.departure, {}) : '';
+    const fallback = !arrival && !departure ? '<div class="ft-empty ft-empty--small">No hay datos guardados para este archivo.</div>' : '';
+    const compactTable = compactFlightsTable(item);
+    const airline = item.airline || item.arrival?.airline || item.departure?.airline || '-';
+    const registration = item.registration || item.arrival?.registration || item.departure?.registration || '-';
+    const completedInfo = item.completedAt
+      ? `<span class="ft-pair__completed">Realizado ${escapeHtml(text(item.completedAt))}</span>`
+      : '<span class="ft-pair__completed">Realizado -</span>';
+    const openAttribute = openIds.has(String(item.id)) ? ' open' : '';
+
+    return `
+      <details class="ft-pair ft-pair--archived" data-ft-archived-item="${item.id}"${openAttribute}>
+        <summary class="ft-pair__summary">
+          <span class="ft-pair__saved-at">Archivado ${escapeHtml(text(item.archivedAt))}</span>
+          <span class="ft-pair__airline">${escapeHtml(text(airline))}</span>
+          ${compactTable}
+          <strong class="ft-pair__registration">${escapeHtml(text(registration))}</strong>
+          ${completedInfo}
+          <span class="ft-pair__toggle">Desplegar</span>
+        </summary>
+        <div class="ft-pair__body">
+          ${arrival}
+          ${departure}
+          ${fallback}
+          <div class="ft-archive-meta">
+            <span>Guardado ${escapeHtml(text(item.createdAt))}</span>
+            <span>Fecha vuelo ${escapeHtml(text(item.flightDate))}</span>
+          </div>
+          <div class="ft-pair__actions ft-pair__actions--single">
+            <button class="ft-button ft-button--danger" type="button" data-ft-delete-archived="${item.id}">Eliminar archivado</button>
           </div>
         </div>
       </details>
@@ -322,11 +394,36 @@
     const results = root.querySelector('[data-ft-saved-results]');
     const summary = root.querySelector('[data-ft-saved-summary]');
     const refresh = root.querySelector('[data-ft-saved-refresh]');
-    const pdf = root.querySelector('[data-ft-saved-pdf]');
+    const archivedResults = root.querySelector('[data-ft-archived-results]');
+    const archivedSummary = root.querySelector('[data-ft-archived-summary]');
+    const archivedRefresh = root.querySelector('[data-ft-archived-refresh]');
+    const archivedPdf = root.querySelector('[data-ft-archived-pdf]');
     const table = root.dataset.table || config.table || '';
 
     const openSavedIds = () =>
       new Set(Array.from(results.querySelectorAll('[data-ft-saved-item][open]')).map((item) => item.dataset.ftSavedItem));
+
+    const openArchivedIds = () =>
+      new Set(Array.from(archivedResults.querySelectorAll('[data-ft-archived-item][open]')).map((item) => item.dataset.ftArchivedItem));
+
+    const loadArchived = async () => {
+      if (!archivedResults || !archivedSummary) return;
+
+      archivedSummary.textContent = 'Actualizando vuelos archivados...';
+      const openIds = openArchivedIds();
+
+      try {
+        const data = await post('flights_tracker_archived');
+        archivedResults.innerHTML = data.archived.length
+          ? data.archived.map((item) => archivedCard(item, openIds)).join('')
+          : '<div class="ft-empty">Aun no tienes vuelos archivados.</div>';
+        archivedSummary.textContent = `${data.archived.length} archivados · actualizado ${data.serverTime}`;
+        setAlert(root, '');
+      } catch (error) {
+        archivedSummary.textContent = 'No se han podido cargar los vuelos archivados.';
+        setAlert(root, error.message, 'error');
+      }
+    };
 
     const load = async () => {
       summary.textContent = 'Actualizando tus vuelos guardados...';
@@ -339,6 +436,7 @@
           : '<div class="ft-empty">Aun no tienes vuelos guardados.</div>';
         summary.textContent = `${data.saved.length} guardados · actualizado ${data.serverTime}`;
         setAlert(root, '');
+        loadArchived();
       } catch (error) {
         summary.textContent = 'No se han podido cargar tus vuelos guardados.';
         setAlert(root, error.message, 'error');
@@ -348,6 +446,7 @@
     root.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-ft-delete-saved]');
       const complete = event.target.closest('[data-ft-complete-saved]');
+      const archivedDelete = event.target.closest('[data-ft-delete-archived]');
 
       if (button) {
         button.disabled = true;
@@ -359,6 +458,20 @@
         } catch (error) {
           button.disabled = false;
           button.textContent = 'Eliminar';
+          setAlert(root, error.message, 'error');
+        }
+      }
+
+      if (archivedDelete) {
+        archivedDelete.disabled = true;
+        archivedDelete.textContent = 'Eliminando...';
+
+        try {
+          await post('flights_tracker_delete_archived', { archivedId: archivedDelete.dataset.ftDeleteArchived });
+          loadArchived();
+        } catch (error) {
+          archivedDelete.disabled = false;
+          archivedDelete.textContent = 'Eliminar archivado';
           setAlert(root, error.message, 'error');
         }
       }
@@ -383,12 +496,15 @@
 
     refresh.addEventListener('click', load);
 
-    if (pdf) {
-      pdf.addEventListener('click', () => {
+    if (archivedRefresh) {
+      archivedRefresh.addEventListener('click', loadArchived);
+    }
+
+    if (archivedPdf) {
+      archivedPdf.addEventListener('click', () => {
         const url = new URL(config.ajaxUrl);
-        url.searchParams.set('action', 'flights_tracker_download_saved_pdf');
+        url.searchParams.set('action', 'flights_tracker_download_archived_pdf');
         url.searchParams.set('nonce', config.nonce);
-        url.searchParams.set('table', table);
         window.location.href = url.toString();
       });
     }

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Flights Tracker
  * Description: Buscador móvil de vuelos con guardado por usuario desde la tabla vuelos_live.
- * Version: 0.3.5
+ * Version: 0.3.9
  * Author: Antonio Marquez
  * Text Domain: flights-tracker
  */
@@ -13,16 +13,18 @@ if (!defined('ABSPATH')) {
 
 final class Flights_Tracker_Plugin
 {
-    private const VERSION = '0.3.5';
+    private const VERSION = '0.3.9';
     private const LIVE_TABLE = 'vuelos_live';
     private const NONCE_ACTION = 'flights_tracker_nonce';
     private const PER_PAGE = 25;
+    private const ARCHIVE_CRON = 'flights_tracker_archive_due_saved';
 
     public static function init(): void
     {
         $plugin = new self();
 
         register_activation_hook(__FILE__, [$plugin, 'activate']);
+        register_deactivation_hook(__FILE__, [$plugin, 'deactivate']);
 
         add_action('wp_enqueue_scripts', [$plugin, 'register_assets']);
         add_action('init', [$plugin, 'maybe_upgrade']);
@@ -36,9 +38,13 @@ final class Flights_Tracker_Plugin
         add_action('wp_ajax_nopriv_flights_tracker_matches', [$plugin, 'ajax_matches']);
         add_action('wp_ajax_flights_tracker_save', [$plugin, 'ajax_save']);
         add_action('wp_ajax_flights_tracker_saved', [$plugin, 'ajax_saved']);
+        add_action('wp_ajax_flights_tracker_archived', [$plugin, 'ajax_archived']);
         add_action('wp_ajax_flights_tracker_delete_saved', [$plugin, 'ajax_delete_saved']);
+        add_action('wp_ajax_flights_tracker_delete_archived', [$plugin, 'ajax_delete_archived']);
         add_action('wp_ajax_flights_tracker_complete_saved', [$plugin, 'ajax_complete_saved']);
-        add_action('wp_ajax_flights_tracker_download_saved_pdf', [$plugin, 'download_saved_pdf']);
+        add_action('wp_ajax_flights_tracker_download_saved_pdf', [$plugin, 'download_archived_pdf']);
+        add_action('wp_ajax_flights_tracker_download_archived_pdf', [$plugin, 'download_archived_pdf']);
+        add_action(self::ARCHIVE_CRON, [$plugin, 'archive_due_saved_items']);
     }
 
     public function activate(): void
@@ -48,6 +54,7 @@ final class Flights_Tracker_Plugin
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
         $table = $this->saved_table();
+        $archive_table = $this->archived_table();
         $charset = $wpdb->get_charset_collate();
 
         dbDelta("CREATE TABLE {$table} (
@@ -68,7 +75,50 @@ final class Flights_Tracker_Plugin
             UNIQUE KEY uq_user_pair (user_id, primary_flight_id, related_flight_id)
         ) {$charset};");
 
+        dbDelta("CREATE TABLE {$archive_table} (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) unsigned NOT NULL,
+            saved_id bigint(20) unsigned DEFAULT NULL,
+            base_iata char(3) NOT NULL DEFAULT 'AGP',
+            registration varchar(20) DEFAULT NULL,
+            airline varchar(120) DEFAULT NULL,
+            arrival_flight_number varchar(30) DEFAULT NULL,
+            arrival_flight_number_display varchar(20) DEFAULT NULL,
+            arrival_route varchar(80) DEFAULT NULL,
+            arrival_scheduled_time datetime DEFAULT NULL,
+            arrival_real_time datetime DEFAULT NULL,
+            arrival_status varchar(120) DEFAULT NULL,
+            departure_flight_number varchar(30) DEFAULT NULL,
+            departure_flight_number_display varchar(20) DEFAULT NULL,
+            departure_route varchar(80) DEFAULT NULL,
+            departure_scheduled_time datetime DEFAULT NULL,
+            departure_real_time datetime DEFAULT NULL,
+            departure_status varchar(120) DEFAULT NULL,
+            saved_created_at datetime DEFAULT NULL,
+            completed_at datetime DEFAULT NULL,
+            archived_at datetime DEFAULT NULL,
+            created_at datetime NOT NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY (id),
+            KEY idx_user_archived (user_id, archived_at),
+            KEY idx_user_registration (user_id, registration),
+            UNIQUE KEY uq_saved_id (saved_id)
+        ) {$charset};");
+
+        if (!wp_next_scheduled(self::ARCHIVE_CRON)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::ARCHIVE_CRON);
+        }
+
         update_option('flights_tracker_db_version', self::VERSION, false);
+    }
+
+    public function deactivate(): void
+    {
+        $timestamp = wp_next_scheduled(self::ARCHIVE_CRON);
+
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, self::ARCHIVE_CRON);
+        }
     }
 
     public function maybe_upgrade(): void
@@ -178,11 +228,24 @@ final class Flights_Tracker_Plugin
                 <span data-ft-saved-summary>Cargando tus vuelos guardados...</span>
                 <div class="ft-toolbar__actions">
                     <button class="ft-button ft-button--ghost" type="button" data-ft-saved-refresh>Actualizar</button>
-                    <button class="ft-button ft-button--primary" type="button" data-ft-saved-pdf>Descargar PDF</button>
                 </div>
             </div>
             <div class="ft-alert" data-ft-alert hidden></div>
             <div class="ft-list" data-ft-saved-results></div>
+
+            <section class="ft-archive-section" aria-labelledby="ft-archived-title">
+                <div class="ft-toolbar ft-toolbar--archive">
+                    <div>
+                        <h3 id="ft-archived-title" class="ft-section-title">Vuelos archivados</h3>
+                        <span data-ft-archived-summary>Cargando vuelos archivados...</span>
+                    </div>
+                    <div class="ft-toolbar__actions">
+                        <button class="ft-button ft-button--ghost" type="button" data-ft-archived-refresh>Actualizar</button>
+                        <button class="ft-button ft-button--primary" type="button" data-ft-archived-pdf>Descargar PDF</button>
+                    </div>
+                </div>
+                <div class="ft-list" data-ft-archived-results></div>
+            </section>
         </div>
         <?php
 
@@ -331,6 +394,34 @@ final class Flights_Tracker_Plugin
             wp_send_json_error(['message' => 'No se ha podido guardar el vuelo.'], 500);
         }
 
+        $saved_row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$this->saved_table()}
+             WHERE user_id = %d AND primary_flight_id = %d AND " . ($related_id ? 'related_flight_id = %d' : 'related_flight_id IS NULL') . "
+             ORDER BY id DESC LIMIT 1",
+            $related_id ? [get_current_user_id(), $primary_id, $related_id] : [get_current_user_id(), $primary_id]
+        ), ARRAY_A);
+
+        if (is_array($saved_row)) {
+            $arrival = null;
+            $departure = null;
+
+            foreach ([$primary, $related] as $flight) {
+                if (!$flight) {
+                    continue;
+                }
+
+                if (($flight['direction'] ?? '') === 'arrival') {
+                    $arrival = $flight;
+                }
+
+                if (($flight['direction'] ?? '') === 'departure') {
+                    $departure = $flight;
+                }
+            }
+
+            $this->upsert_archive_snapshot($saved_row, $arrival, $departure, null);
+        }
+
         wp_send_json_success(['message' => 'Vuelo guardado.']);
     }
 
@@ -343,9 +434,24 @@ final class Flights_Tracker_Plugin
         }
 
         $table = isset($_POST['table']) ? sanitize_text_field(wp_unslash($_POST['table'])) : '';
+        $this->archive_due_saved_items($table);
 
         wp_send_json_success([
             'saved' => $this->get_saved_flights($table),
+            'serverTime' => wp_date('H:i:s'),
+        ]);
+    }
+
+    public function ajax_archived(): void
+    {
+        $this->verify_nonce();
+
+        if (!is_user_logged_in()) {
+            wp_send_json_error(['message' => 'Debes iniciar sesion.'], 401);
+        }
+
+        wp_send_json_success([
+            'archived' => $this->get_archived_flights(200),
             'serverTime' => wp_date('H:i:s'),
         ]);
     }
@@ -367,7 +473,33 @@ final class Flights_Tracker_Plugin
             wp_send_json_error(['message' => 'No se ha podido eliminar.'], 500);
         }
 
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$this->archived_table()} WHERE saved_id = %d AND user_id = %d AND archived_at IS NULL",
+            $saved_id,
+            get_current_user_id()
+        ));
+
         wp_send_json_success(['message' => 'Vuelo eliminado.']);
+    }
+
+    public function ajax_delete_archived(): void
+    {
+        $this->verify_nonce();
+
+        if (!is_user_logged_in()) {
+            wp_send_json_error(['message' => 'Debes iniciar sesion.'], 401);
+        }
+
+        global $wpdb;
+
+        $archived_id = isset($_POST['archivedId']) ? absint($_POST['archivedId']) : 0;
+        $deleted = $wpdb->delete($this->archived_table(), ['id' => $archived_id, 'user_id' => get_current_user_id()], ['%d', '%d']);
+
+        if ($deleted === false) {
+            wp_send_json_error(['message' => 'No se ha podido eliminar el vuelo archivado.'], 500);
+        }
+
+        wp_send_json_success(['message' => 'Vuelo archivado eliminado.']);
     }
 
     public function ajax_complete_saved(): void
@@ -402,10 +534,24 @@ final class Flights_Tracker_Plugin
             wp_send_json_error(['message' => 'No se ha podido marcar como realizado.'], 500);
         }
 
+        $wpdb->update(
+            $this->archived_table(),
+            [
+                'completed_at' => $completed ? current_time('mysql') : null,
+                'updated_at' => current_time('mysql'),
+            ],
+            [
+                'saved_id' => $saved_id,
+                'user_id' => get_current_user_id(),
+            ],
+            ['%s', '%s'],
+            ['%d', '%d']
+        );
+
         wp_send_json_success(['message' => $completed ? 'Vuelo realizado.' : 'Vuelo pendiente.']);
     }
 
-    public function download_saved_pdf(): void
+    public function download_archived_pdf(): void
     {
         $nonce = isset($_GET['nonce']) ? sanitize_text_field(wp_unslash($_GET['nonce'])) : '';
 
@@ -417,11 +563,10 @@ final class Flights_Tracker_Plugin
             wp_die('Debes iniciar sesion.', '', ['response' => 401]);
         }
 
-        $table = isset($_GET['table']) ? sanitize_text_field(wp_unslash($_GET['table'])) : '';
-        $items = $this->get_saved_flights($table, 1000);
+        $items = $this->get_archived_flights(1000);
         $user = wp_get_current_user();
-        $filename = 'mis-vuelos-' . sanitize_file_name($user->user_login ?: 'usuario') . '-' . wp_date('Y-m-d') . '.pdf';
-        $pdf = $this->build_saved_flights_pdf($items, $user);
+        $filename = 'vuelos-archivados-' . sanitize_file_name($user->user_login ?: 'usuario') . '-' . wp_date('Y-m-d') . '.pdf';
+        $pdf = $this->build_archived_flights_pdf($items, $user);
 
         nocache_headers();
         header('Content-Type: application/pdf');
@@ -628,41 +773,313 @@ final class Flights_Tracker_Plugin
         return $items;
     }
 
-    private function build_saved_flights_pdf(array $items, WP_User $user): string
+    public function archive_due_saved_items(string $table_override = ''): void
+    {
+        global $wpdb;
+
+        $saved = $wpdb->get_results(
+            "SELECT * FROM {$this->saved_table()} ORDER BY created_at ASC LIMIT 500",
+            ARRAY_A
+        );
+
+        if (!is_array($saved)) {
+            return;
+        }
+
+        foreach ($saved as $row) {
+            $saved_id = (int) $row['id'];
+            $snapshot = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$this->archived_table()} WHERE saved_id = %d LIMIT 1",
+                $saved_id
+            ), ARRAY_A);
+
+            if (is_array($snapshot) && !empty($snapshot['archived_at'])) {
+                $wpdb->delete($this->saved_table(), ['id' => $saved_id], ['%d']);
+                continue;
+            }
+
+            $flights = $this->saved_row_flights($row, $table_override);
+            $departure = $flights['departure'];
+
+            if (!$departure) {
+                $snapshot_timestamp = is_array($snapshot) ? $this->snapshot_departure_timestamp($snapshot) : null;
+
+                if ($snapshot_timestamp && time() >= $snapshot_timestamp + HOUR_IN_SECONDS) {
+                    $updated = $wpdb->update(
+                        $this->archived_table(),
+                        [
+                            'completed_at' => $this->datetime_or_null($row['completed_at'] ?? null),
+                            'archived_at' => current_time('mysql'),
+                            'updated_at' => current_time('mysql'),
+                        ],
+                        ['saved_id' => $saved_id],
+                        ['%s', '%s', '%s'],
+                        ['%d']
+                    );
+
+                    if ($updated !== false) {
+                        $wpdb->delete($this->saved_table(), ['id' => $saved_id], ['%d']);
+                    }
+                }
+
+                continue;
+            }
+
+            $departure_timestamp = $this->archive_departure_timestamp($departure);
+
+            if (!$departure_timestamp || time() < $departure_timestamp + HOUR_IN_SECONDS) {
+                $this->upsert_archive_snapshot($row, $flights['arrival'], $departure, null);
+                continue;
+            }
+
+            $archived = $this->archive_saved_row($row, $flights['arrival'], $departure);
+
+            if ($archived) {
+                $wpdb->delete($this->saved_table(), ['id' => $saved_id], ['%d']);
+            }
+        }
+    }
+
+    private function saved_row_flights(array $row, string $table_override = ''): array
+    {
+        $primary = $this->get_flight((int) $row['primary_flight_id'], $table_override);
+        $related = !empty($row['related_flight_id']) ? $this->get_flight((int) $row['related_flight_id'], $table_override) : null;
+        $arrival = null;
+        $departure = null;
+
+        foreach ([$primary, $related] as $flight) {
+            if (!$flight) {
+                continue;
+            }
+
+            if (($flight['direction'] ?? '') === 'arrival') {
+                $arrival = $flight;
+            }
+
+            if (($flight['direction'] ?? '') === 'departure') {
+                $departure = $flight;
+            }
+        }
+
+        return [
+            'primary' => $primary,
+            'related' => $related,
+            'arrival' => $arrival,
+            'departure' => $departure,
+        ];
+    }
+
+    private function archive_saved_row(array $row, ?array $arrival, array $departure): bool
+    {
+        return $this->upsert_archive_snapshot($row, $arrival, $departure, current_time('mysql'));
+    }
+
+    private function upsert_archive_snapshot(array $row, ?array $arrival, ?array $departure, ?string $archived_at): bool
+    {
+        global $wpdb;
+
+        $now = current_time('mysql');
+        $base_iata = (string) ($departure['base_iata'] ?? $arrival['base_iata'] ?? $row['base_iata'] ?? 'AGP');
+        $registration = (string) ($departure['registration'] ?? $arrival['registration'] ?? $row['registration'] ?? '');
+        $airline = (string) ($departure['aerolinea'] ?? $arrival['aerolinea'] ?? '');
+
+        $data = [
+            'user_id' => (int) $row['user_id'],
+            'saved_id' => (int) $row['id'],
+            'base_iata' => $base_iata,
+            'registration' => $registration,
+            'airline' => $airline,
+            'arrival_flight_number' => $arrival ? (string) ($arrival['numero_vuelo'] ?? '') : null,
+            'arrival_flight_number_display' => $arrival ? $this->short_flight_number((string) ($arrival['numero_vuelo'] ?? '')) : null,
+            'arrival_route' => $arrival ? $this->route_label($arrival) : null,
+            'arrival_scheduled_time' => $arrival ? $this->datetime_or_null($arrival['hora_programada'] ?? null) : null,
+            'arrival_real_time' => $arrival ? $this->datetime_or_null($arrival['hora_real'] ?? null) : null,
+            'arrival_status' => $arrival ? (string) ($arrival['estado'] ?? '') : null,
+            'departure_flight_number' => $departure ? (string) ($departure['numero_vuelo'] ?? '') : null,
+            'departure_flight_number_display' => $departure ? $this->short_flight_number((string) ($departure['numero_vuelo'] ?? '')) : null,
+            'departure_route' => $departure ? $this->route_label($departure) : null,
+            'departure_scheduled_time' => $departure ? $this->datetime_or_null($departure['hora_programada'] ?? null) : null,
+            'departure_real_time' => $departure ? $this->datetime_or_null($departure['hora_real'] ?? null) : null,
+            'departure_status' => $departure ? (string) ($departure['estado'] ?? '') : null,
+            'saved_created_at' => $this->datetime_or_null($row['created_at'] ?? null),
+            'completed_at' => $this->datetime_or_null($row['completed_at'] ?? null),
+            'archived_at' => $this->datetime_or_null($archived_at),
+            'updated_at' => $now,
+        ];
+
+        $existing_id = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$this->archived_table()} WHERE saved_id = %d LIMIT 1",
+            (int) $row['id']
+        ));
+
+        $formats = ['%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s'];
+
+        if ($existing_id) {
+            $updated = $wpdb->update(
+                $this->archived_table(),
+                $data,
+                ['id' => $existing_id],
+                $formats,
+                ['%d']
+            );
+
+            return $updated !== false;
+        }
+
+        $data['created_at'] = $now;
+        $formats[] = '%s';
+
+        $inserted = $wpdb->insert(
+            $this->archived_table(),
+            $data,
+            $formats
+        );
+
+        return $inserted !== false;
+    }
+
+    private function get_archived_flights(int $limit = 200): array
+    {
+        global $wpdb;
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$this->archived_table()} WHERE user_id = %d AND archived_at IS NOT NULL ORDER BY archived_at DESC LIMIT %d",
+            get_current_user_id(),
+            $limit
+        ), ARRAY_A);
+
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map([$this, 'format_archived_item'], $rows);
+    }
+
+    private function format_archived_item(array $row): array
+    {
+        $arrival = $this->format_archived_flight($row, 'arrival');
+        $departure = $this->format_archived_flight($row, 'departure');
+
+        return [
+            'id' => (int) $row['id'],
+            'flightDate' => $this->archived_flight_date($row),
+            'createdAt' => $this->format_local_datetime($row['saved_created_at'] ?? null),
+            'archivedAt' => $this->format_local_datetime($row['archived_at'] ?? null),
+            'completed' => !empty($row['completed_at']),
+            'completedAt' => $this->format_local_datetime($row['completed_at'] ?? null),
+            'airline' => (string) ($row['airline'] ?? ''),
+            'registration' => (string) ($row['registration'] ?? ''),
+            'primary' => $arrival ?: $departure,
+            'related' => $arrival && $departure ? $departure : null,
+            'arrival' => $arrival,
+            'departure' => $departure,
+        ];
+    }
+
+    private function archived_flight_date(array $row): string
+    {
+        $candidates = [
+            $row['departure_real_time'] ?? null,
+            $row['departure_scheduled_time'] ?? null,
+            $row['arrival_real_time'] ?? null,
+            $row['arrival_scheduled_time'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $timestamp = $this->raw_datetime_timestamp($candidate);
+
+            if ($timestamp) {
+                return wp_date('d/m/y', $timestamp);
+            }
+        }
+
+        return '-';
+    }
+
+    private function format_archived_flight(array $row, string $direction): ?array
+    {
+        $flight_number = (string) ($row[$direction . '_flight_number'] ?? '');
+        $route = (string) ($row[$direction . '_route'] ?? '');
+        $scheduled = $row[$direction . '_scheduled_time'] ?? null;
+        $real = $row[$direction . '_real_time'] ?? null;
+        $status = (string) ($row[$direction . '_status'] ?? '');
+
+        if ($flight_number === '' && $route === '' && !$scheduled && !$real && $status === '') {
+            return null;
+        }
+
+        return [
+            'id' => 0,
+            'baseIata' => (string) ($row['base_iata'] ?? ''),
+            'direction' => $direction,
+            'directionLabel' => $direction === 'arrival' ? 'Llegada' : 'Salida',
+            'flightNumber' => $flight_number,
+            'flightNumberDisplay' => (string) ($row[$direction . '_flight_number_display'] ?? '') ?: $this->short_flight_number($flight_number),
+            'airline' => (string) ($row['airline'] ?? ''),
+            'origin' => '',
+            'destination' => '',
+            'route' => $route,
+            'scheduledTime' => $this->format_datetime($scheduled),
+            'realTime' => $this->format_datetime($real),
+            'status' => $status,
+            'statusType' => $this->status_type($status),
+            'aircraftType' => '',
+            'registration' => (string) ($row['registration'] ?? ''),
+            'lastSeenAt' => '',
+        ];
+    }
+
+    private function build_archived_flights_pdf(array $items, WP_User $user): string
     {
         $rows = [];
 
         foreach ($items as $item) {
             $arrival = $item['arrival'] ?? null;
             $departure = $item['departure'] ?? null;
-            $registration = $arrival['registration'] ?? $departure['registration'] ?? $item['primary']['registration'] ?? '-';
+            $registration = $item['registration'] ?? $arrival['registration'] ?? $departure['registration'] ?? $item['primary']['registration'] ?? '-';
+            $airline = $item['airline'] ?? $arrival['airline'] ?? $departure['airline'] ?? '-';
             $route_parts = array_filter([
                 $arrival ? $arrival['route'] : '',
                 $departure ? $departure['route'] : '',
             ]);
-            $scheduled_times = array_filter([
-                $arrival ? $arrival['scheduledTime'] : '',
-                $departure ? $departure['scheduledTime'] : '',
-            ]);
-            $real_times = array_filter([
-                $arrival ? $arrival['realTime'] : '',
-                $departure ? $departure['realTime'] : '',
-            ]);
 
             $rows[] = [
-                'saved' => $item['createdAt'] ?: '-',
-                'status' => !empty($item['completed']) ? 'Realizado' : 'Pendiente',
-                'completed' => !empty($item['completed']) ? ($item['completedAt'] ?: 'Sin hora') : '-',
+                'flightDate' => $item['flightDate'] ?? '-',
+                'completed' => !empty($item['completedAt']) ? $item['completedAt'] : '-',
                 'registration' => $registration ?: '-',
+                'airline' => $airline ?: '-',
                 'arrival' => $arrival ? ($arrival['flightNumberDisplay'] ?: $arrival['flightNumber'] ?: '-') : '-',
+                'arrivalTimes' => $this->pdf_time_pair($arrival),
                 'departure' => $departure ? ($departure['flightNumberDisplay'] ?: $departure['flightNumber'] ?: '-') : '-',
+                'departureTimes' => $this->pdf_time_pair($departure),
                 'route' => $route_parts ? implode(' / ', $route_parts) : '-',
-                'scheduledTime' => $scheduled_times ? implode(' / ', $scheduled_times) : '-',
-                'realTime' => $real_times ? implode(' / ', $real_times) : '-',
+                'archived' => $item['archivedAt'] ?? '-',
             ];
         }
 
         return $this->render_saved_flights_table_pdf($rows, $user, count($items));
+    }
+
+    private function pdf_time_pair(?array $flight): string
+    {
+        if (!$flight) {
+            return '-';
+        }
+
+        return $this->pdf_time_value($flight['scheduledTime'] ?? '') . '/' . $this->pdf_time_value($flight['realTime'] ?? '');
+    }
+
+    private function pdf_time_value(string $value): string
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return '-';
+        }
+
+        $parts = preg_split('/\s+/', $value);
+
+        return $parts ? end($parts) : $value;
     }
 
     private function render_saved_flights_table_pdf(array $rows, WP_User $user, int $total): string
@@ -671,37 +1088,28 @@ final class Flights_Tracker_Plugin
         $height = 595;
         $margin = 32;
         $table_width = $width - ($margin * 2);
-        $header_height = 24;
-        $row_height = 48;
+        $header_height = 22;
+        $row_height = 38;
         $bottom = 42;
         $columns = [
-            ['label' => 'Guardado', 'key' => 'saved', 'width' => 58],
-            ['label' => 'Estado', 'key' => 'status', 'width' => 56],
-            ['label' => 'Realizado', 'key' => 'completed', 'width' => 64],
+            ['label' => 'Fecha', 'key' => 'flightDate', 'width' => 54],
+            ['label' => 'Realizado', 'key' => 'completed', 'width' => 66],
             ['label' => 'Matricula', 'key' => 'registration', 'width' => 58],
-            ['label' => 'Llegada', 'key' => 'arrival', 'width' => 54],
-            ['label' => 'Salida', 'key' => 'departure', 'width' => 54],
-            ['label' => 'Ruta', 'key' => 'route', 'width' => 228],
-            ['label' => 'Hora programada', 'key' => 'scheduledTime', 'width' => 103],
-            ['label' => 'Hora real', 'key' => 'realTime', 'width' => 103],
+            ['label' => 'Compania', 'key' => 'airline', 'width' => 86],
+            ['label' => 'Llegada', 'key' => 'arrival', 'width' => 48],
+            ['label' => 'Llegada/real', 'key' => 'arrivalTimes', 'width' => 74],
+            ['label' => 'Salida', 'key' => 'departure', 'width' => 48],
+            ['label' => 'Salida/real', 'key' => 'departureTimes', 'width' => 74],
+            ['label' => 'Ruta', 'key' => 'route', 'width' => 190],
+            ['label' => 'Archivado', 'key' => 'archived', 'width' => 80],
         ];
-        $title = 'Mis vuelos';
+        $title = 'Vuelos archivados';
         $user_name = $this->normalize_pdf_text($user->display_name ?: $user->user_login ?: 'Usuario');
         $generated = wp_date('d/m/Y H:i');
-        $completed_total = 0;
-        $pending_total = 0;
         $pages = [];
         $page_rows = [];
-        $table_top = 460;
+        $table_top = 470;
         $y = $table_top - $header_height;
-
-        foreach ($rows as $row) {
-            if ($row['status'] === 'Realizado') {
-                $completed_total++;
-            } else {
-                $pending_total++;
-            }
-        }
 
         foreach ($rows as $row) {
             if ($y - $row_height < $bottom) {
@@ -740,58 +1148,43 @@ final class Flights_Tracker_Plugin
 
         foreach ($pages as $page_index => $page_rows_for_page) {
             $stream = '';
-            $stream .= $this->pdf_rect(0, 0, $width, $height, '0.97 0.98 0.99');
-            $stream .= $this->pdf_rect(0, $height - 86, $width, 86, '0.08 0.20 0.31');
-            $stream .= $this->pdf_text($title, $margin, $height - 45, 22, 'F2', '1 1 1');
-            $stream .= $this->pdf_text('Registro descargable de vuelos guardados', $margin, $height - 66, 9, 'F1', '0.82 0.90 0.96');
-            $stream .= $this->pdf_text('Usuario: ' . $user_name, $width - 300, $height - 42, 10, 'F2', '1 1 1');
-            $stream .= $this->pdf_text('Generado: ' . $generated, $width - 300, $height - 60, 9, 'F1', '0.82 0.90 0.96');
+            $stream .= $this->pdf_rect(0, 0, $width, $height, '1 1 1');
+            $stream .= $this->pdf_text($title, $margin, $height - 42, 20, 'F2', '0.10 0.14 0.20');
+            $stream .= $this->pdf_text('Registro fijo para impresion: los vuelos archivados ya no se sincronizan con la tabla live.', $margin, $height - 62, 8.5, 'F1', '0.34 0.39 0.46');
+            $stream .= $this->pdf_text('Usuario: ' . $user_name, $width - 300, $height - 42, 9, 'F2', '0.10 0.14 0.20');
+            $stream .= $this->pdf_text('Generado: ' . $generated, $width - 300, $height - 58, 8, 'F1', '0.34 0.39 0.46');
+            $stream .= $this->pdf_line($margin, $height - 78, $width - $margin, $height - 78, '0.78 0.82 0.87', 0.8);
 
-            $stream .= $this->pdf_rect($margin, $height - 118, 155, 38, '1 1 1');
-            $stream .= $this->pdf_text('Total guardados', $margin + 12, $height - 96, 8, 'F1', '0.39 0.46 0.54');
-            $stream .= $this->pdf_text((string) $total, $margin + 112, $height - 97, 15, 'F2', '0.08 0.20 0.31');
+            $stream .= $this->pdf_rect($margin, $height - 124, 150, 30, '0.96 0.97 0.98');
+            $stream .= $this->pdf_text('Total archivados', $margin + 10, $height - 106, 8, 'F1', '0.34 0.39 0.46');
+            $stream .= $this->pdf_text((string) $total, $margin + 112, $height - 107, 13, 'F2', '0.10 0.14 0.20');
 
-            $stream .= $this->pdf_rect($margin + 166, $height - 118, 170, 38, '1 1 1');
-            $stream .= $this->pdf_text('Realizados', $margin + 178, $height - 96, 8, 'F1', '0.39 0.46 0.54');
-            $stream .= $this->pdf_text((string) $completed_total, $margin + 290, $height - 97, 15, 'F2', '0.09 0.42 0.26');
-
-            $stream .= $this->pdf_rect($margin + 348, $height - 118, 170, 38, '1 1 1');
-            $stream .= $this->pdf_text('Pendientes', $margin + 360, $height - 96, 8, 'F1', '0.39 0.46 0.54');
-            $stream .= $this->pdf_text((string) $pending_total, $margin + 472, $height - 97, 15, 'F2', '0.70 0.15 0.12');
-
-            $stream .= $this->pdf_rect($margin, $table_top - $header_height, $table_width, $header_height, '0.12 0.28 0.42');
+            $stream .= $this->pdf_rect($margin, $table_top - $header_height, $table_width, $header_height, '0.90 0.92 0.95');
 
             $x = $margin;
             foreach ($columns as $column) {
-                $stream .= $this->pdf_text($column['label'], $x + 5, $table_top - 17, 7.5, 'F2', '1 1 1');
+                $stream .= $this->pdf_text($column['label'], $x + 5, $table_top - 15, 7.2, 'F2', '0.15 0.19 0.26');
                 $x += $column['width'];
             }
 
             if (!$rows) {
                 $stream .= $this->pdf_rect($margin, $table_top - $header_height - 54, $table_width, 54, '1 1 1');
-                $stream .= $this->pdf_text('No hay vuelos guardados.', $margin + 14, $table_top - $header_height - 31, 10, 'F1', '0.39 0.46 0.54');
+                $stream .= $this->pdf_text('No hay vuelos archivados.', $margin + 14, $table_top - $header_height - 31, 10, 'F1', '0.39 0.46 0.54');
             }
 
             $row_y = $table_top - $header_height - $row_height;
             foreach ($page_rows_for_page as $row_index => $row) {
-                $fill = $row_index % 2 === 0 ? '1 1 1' : '0.94 0.97 1';
+                $fill = $row_index % 2 === 0 ? '1 1 1' : '0.98 0.98 0.99';
                 $stream .= $this->pdf_rect($margin, $row_y, $table_width, $row_height, $fill);
-                $stream .= $this->pdf_line($margin, $row_y, $margin + $table_width, $row_y, '0.83 0.88 0.93', 0.5);
+                $stream .= $this->pdf_line($margin, $row_y, $margin + $table_width, $row_y, '0.84 0.86 0.89', 0.4);
 
                 $x = $margin;
                 foreach ($columns as $column) {
                     $value = (string) ($row[$column['key']] ?? '-');
-                    $font = $column['key'] === 'status' ? 'F2' : 'F1';
+                    $font = in_array($column['key'], ['registration', 'arrival', 'departure'], true) ? 'F2' : 'F1';
                     $color = '0.12 0.18 0.25';
-
-                    if ($column['key'] === 'status' && $value === 'Realizado') {
-                        $color = '0.09 0.42 0.26';
-                    } elseif ($column['key'] === 'status') {
-                        $color = '0.70 0.15 0.12';
-                    }
-
-                    $max_lines = in_array($column['key'], ['route', 'scheduledTime', 'realTime'], true) ? 2 : 1;
-                    $stream .= $this->pdf_cell_text($value, $x + 5, $row_y + $row_height - 13, $column['width'] - 10, 6.8, $font, $color, $max_lines);
+                    $max_lines = in_array($column['key'], ['route', 'airline'], true) ? 2 : 1;
+                    $stream .= $this->pdf_cell_text($value, $x + 5, $row_y + $row_height - 12, $column['width'] - 10, 6.6, $font, $color, $max_lines);
                     $x += $column['width'];
                 }
 
@@ -1059,6 +1452,52 @@ final class Flights_Tracker_Plugin
         return $real !== '' ? $real : $scheduled;
     }
 
+    private function archive_departure_timestamp(array $flight): ?int
+    {
+        $real = trim((string) ($flight['hora_real'] ?? ''));
+        $scheduled = trim((string) ($flight['hora_programada'] ?? ''));
+        $value = $real !== '' ? $real : $scheduled;
+
+        return $this->raw_datetime_timestamp($value);
+    }
+
+    private function snapshot_departure_timestamp(array $snapshot): ?int
+    {
+        $real = trim((string) ($snapshot['departure_real_time'] ?? ''));
+        $scheduled = trim((string) ($snapshot['departure_scheduled_time'] ?? ''));
+        $value = $real !== '' ? $real : $scheduled;
+
+        return $this->raw_datetime_timestamp($value);
+    }
+
+    private function datetime_or_null($value): ?string
+    {
+        $value = trim((string) ($value ?? ''));
+
+        if ($value === '' || $value === '0000-00-00 00:00:00') {
+            return null;
+        }
+
+        return preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value) ? $value : null;
+    }
+
+    private function raw_datetime_timestamp($value): ?int
+    {
+        $value = $this->datetime_or_null($value);
+
+        if (!$value) {
+            return null;
+        }
+
+        if ((bool) apply_filters('flights_tracker_times_are_utc', true)) {
+            $datetime = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, new DateTimeZone('UTC'));
+        } else {
+            $datetime = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, wp_timezone());
+        }
+
+        return $datetime ? $datetime->getTimestamp() : null;
+    }
+
     private function live_table(string $override = ''): string
     {
         $table = $this->sanitize_table_name($override);
@@ -1096,6 +1535,13 @@ final class Flights_Tracker_Plugin
         global $wpdb;
 
         return $wpdb->prefix . 'flights_tracker_saved';
+    }
+
+    private function archived_table(): string
+    {
+        global $wpdb;
+
+        return $wpdb->prefix . 'flights_tracker_archived';
     }
 }
 
