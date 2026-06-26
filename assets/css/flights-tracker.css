@@ -14,6 +14,14 @@
   margin: 0 auto;
 }
 
+.ft-user-greeting {
+  color: #526172;
+  font-size: clamp(20px, 4.8vw, 28px);
+  font-weight: 700;
+  line-height: 1.25;
+  margin: -10px 0 28px;
+}
+
 .ft-search {
   background: var(--ft-bg);
   border: 1px solid var(--ft-border);

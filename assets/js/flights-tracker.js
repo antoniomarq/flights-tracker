@@ -1,21 +1,44 @@
 (function () {
   const config = window.FlightsTracker || {};
 
-  const post = async (action, data = {}) => {
+  const ajaxUrl = (root) => {
+    const rawUrl = root?.dataset.ftAjaxUrl || config.ajaxUrl || '/wp-admin/admin-ajax.php';
+
+    try {
+      return new URL(rawUrl, window.location.href).toString();
+    } catch (error) {
+      throw new Error('No se ha podido preparar la conexion con WordPress. Revisa la URL de admin-ajax.php.');
+    }
+  };
+
+  const nonce = (root) => root?.dataset.ftNonce || config.nonce || '';
+
+  const post = async (action, data = {}, root = null) => {
     const body = new URLSearchParams({
       action,
-      nonce: config.nonce,
+      nonce: nonce(root),
       ...data,
     });
 
-    const response = await fetch(config.ajaxUrl, {
+    const response = await fetch(ajaxUrl(root), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
     });
 
-    const payload = await response.json();
+    const responseText = await response.text();
+    let payload = null;
+
+    try {
+      payload = JSON.parse(responseText);
+    } catch (error) {
+      throw new Error('WordPress no ha devuelto una respuesta valida. Revisa si la pagina redirige, si falta iniciar sesion o si admin-ajax.php esta bloqueado.');
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.data?.message || `WordPress ha respondido con error ${response.status}.`);
+    }
 
     if (!payload.success) {
       throw new Error(payload.data?.message || 'No se ha podido completar la accion.');
@@ -257,7 +280,7 @@
           perPage,
           offset: state.offset === null ? '' : state.offset,
           initialPage: options.initialPage ? '1' : '0',
-        });
+        }, root);
 
         results.innerHTML = data.flights.length
           ? data.flights.map((flight) => flightCard(flight, { canSave: true })).join('')
@@ -281,7 +304,7 @@
       matchList.innerHTML = '';
 
       try {
-        const data = await post('flights_tracker_matches', { flightId, table });
+        const data = await post('flights_tracker_matches', { flightId, table }, root);
         const flight = data.flight;
 
         modalIntro.textContent = `${flight.registration || 'Sin matricula'} · ${flight.flightNumber}. Elige el vuelo relacionado que quieres guardar.`;
@@ -368,7 +391,7 @@
             primaryFlightId: confirm.dataset.ftConfirmSave,
             relatedFlightId: confirm.dataset.ftRelated,
             table,
-          });
+          }, root);
           modal.hidden = true;
           setAlert(root, 'Vuelo guardado correctamente.', 'success');
         } catch (error) {
@@ -413,7 +436,7 @@
       const openIds = openArchivedIds();
 
       try {
-        const data = await post('flights_tracker_archived');
+        const data = await post('flights_tracker_archived', {}, root);
         archivedResults.innerHTML = data.archived.length
           ? data.archived.map((item) => archivedCard(item, openIds)).join('')
           : '<div class="ft-empty">Aun no tienes vuelos archivados.</div>';
@@ -430,7 +453,7 @@
       const openIds = openSavedIds();
 
       try {
-        const data = await post('flights_tracker_saved', { table });
+        const data = await post('flights_tracker_saved', { table }, root);
         results.innerHTML = data.saved.length
           ? data.saved.map((item) => savedCard(item, openIds)).join('')
           : '<div class="ft-empty">Aun no tienes vuelos guardados.</div>';
@@ -453,7 +476,7 @@
         button.textContent = 'Eliminando...';
 
         try {
-          await post('flights_tracker_delete_saved', { savedId: button.dataset.ftDeleteSaved });
+          await post('flights_tracker_delete_saved', { savedId: button.dataset.ftDeleteSaved }, root);
           load();
         } catch (error) {
           button.disabled = false;
@@ -467,7 +490,7 @@
         archivedDelete.textContent = 'Eliminando...';
 
         try {
-          await post('flights_tracker_delete_archived', { archivedId: archivedDelete.dataset.ftDeleteArchived });
+          await post('flights_tracker_delete_archived', { archivedId: archivedDelete.dataset.ftDeleteArchived }, root);
           loadArchived();
         } catch (error) {
           archivedDelete.disabled = false;
@@ -484,7 +507,7 @@
           await post('flights_tracker_complete_saved', {
             savedId: complete.dataset.ftCompleteSaved,
             completed: complete.dataset.ftCompleted,
-          });
+          }, root);
           load();
         } catch (error) {
           complete.disabled = false;
@@ -502,9 +525,16 @@
 
     if (archivedPdf) {
       archivedPdf.addEventListener('click', () => {
-        const url = new URL(config.ajaxUrl);
+        const downloadNonce = nonce(root);
+
+        if (!downloadNonce) {
+          setAlert(root, 'No se ha podido preparar la descarga. Recarga la pagina.', 'error');
+          return;
+        }
+
+        const url = new URL(ajaxUrl(root));
         url.searchParams.set('action', 'flights_tracker_download_archived_pdf');
-        url.searchParams.set('nonce', config.nonce);
+        url.searchParams.set('nonce', downloadNonce);
         window.location.href = url.toString();
       });
     }

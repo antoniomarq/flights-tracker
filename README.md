@@ -18,9 +18,9 @@ El plugin está pensado para operaciones en aeropuerto base, por ejemplo `AGP`, 
 
 ### Opción Recomendada
 
-1. Descarga el ZIP instalable `flights-tracker-mobile-0.3.9-wordpress.zip`.
+1. Descarga el ZIP instalable `flights-tracker-mobile-0.3.14-wordpress.zip`.
 2. En WordPress, entra en `Plugins > Añadir nuevo > Subir plugin`.
-3. Sube `flights-tracker-mobile-0.3.9-wordpress.zip`.
+3. Sube `flights-tracker-mobile-0.3.14-wordpress.zip`.
 4. Activa el plugin `Flights Tracker`.
 5. Crea las páginas indicadas en la sección `Páginas Recomendadas`.
 
@@ -40,6 +40,7 @@ Estas URLs son sugeridas. Puedes cambiar los nombres, pero mantenerlas así ayud
 
 | Página | Slug recomendado | URL recomendada | Shortcode |
 | --- | --- | --- | --- |
+| Dashboard | `dashboard` | `/dashboard/` | `[flights_tracker_user_greeting]` |
 | Buscador de vuelos | `vuelos` | `/vuelos/` | `[flights_tracker table="flight_data.vuelos_live"]` |
 | Mis vuelos | `mis-vuelos` | `/mis-vuelos/` | `[flights_tracker_saved table="flight_data.vuelos_live"]` |
 | Diagnóstico | `diagnostico-vuelos` | `/diagnostico-vuelos/` | `[flights_tracker_debug table="flight_data.vuelos_live"]` |
@@ -47,6 +48,29 @@ Estas URLs son sugeridas. Puedes cambiar los nombres, pero mantenerlas así ayud
 La página de diagnóstico solo muestra contenido a usuarios administradores.
 
 ## Shortcodes
+
+### `[flights_tracker_user_greeting]`
+
+Muestra un saludo para el usuario conectado.
+
+Ejemplo recomendado para la página `/dashboard/`, debajo del título `Dashboard`:
+
+```text
+[flights_tracker_user_greeting]
+```
+
+Ejemplo cambiando el texto:
+
+```text
+[flights_tracker_user_greeting text="Hola"]
+```
+
+Qué hace:
+
+- Muestra `Bienvenido Usuario`.
+- Usa el nombre del usuario conectado.
+- Si el nombre está en minúsculas, lo muestra con la primera letra en mayúscula.
+- Si el usuario no está conectado, no muestra nada.
 
 ### `[flights_tracker]`
 
@@ -228,6 +252,45 @@ GRANT SELECT ON `flight_data`.`vuelos_live` TO `wpuser`@`%`
 
 Sin este permiso, el plugin puede cargar visualmente, pero mostrará `0 vuelos` o dará error SQL porque WordPress no puede leer la tabla externa.
 
+## Compatibilidad Con Temas
+
+El plugin funciona mediante shortcodes y no depende de GeneratePress Premium, GenerateBlocks ni de un tema concreto.
+
+Está preparado para usarse con temas estándar de WordPress como Twenty Twenty-Five.
+
+Desde la versión `0.3.13`, cuando el plugin está activo también aplica una capa visual para Twenty Twenty-Five:
+
+- Oculta la navegación del encabezado, incluido el menú hamburguesa móvil.
+- Oculta el título superior del sitio en el encabezado.
+- Oculta el pie completo del tema con logo, nombre del sitio, menús y créditos originales.
+- Añade un pie limpio con `© año actual Antonio Marquez`.
+- Reutiliza el logo configurado en WordPress y lo muestra encima del título de cada página.
+
+Si al cambiar de tema el buscador carga visualmente pero aparece un aviso como:
+
+```text
+The string did not match the expected pattern.
+```
+
+Revisa estos puntos:
+
+1. Instala la versión `0.3.11` o superior del plugin.
+2. Limpia cachés del navegador, caché de WordPress y caché del servidor si existe.
+3. Inserta el shortcode dentro de un bloque `Shortcode` o un bloque de contenido normal.
+4. Comprueba que el shortcode mantiene la tabla correcta:
+
+```text
+[flights_tracker table="flight_data.vuelos_live"]
+```
+
+5. Si sigue fallando, crea una página privada con el diagnóstico:
+
+```text
+[flights_tracker_debug table="flight_data.vuelos_live"]
+```
+
+El error anterior suele indicar que el navegador no pudo construir correctamente la URL de conexión interna con WordPress. Desde la versión `0.3.11`, el plugin imprime esa URL directamente dentro del shortcode para evitar depender del tema activo.
+
 ## Tabla De Vuelos Leída
 
 El plugin lee estos campos de la tabla live:
@@ -294,14 +357,16 @@ Con ese filtro, puedes usar:
 [flights_tracker]
 [flights_tracker_saved]
 [flights_tracker_debug]
+[flights_tracker_user_greeting]
 ```
 
 ## Recomendación Final
 
 Para una instalación limpia, crea como mínimo estas dos páginas:
 
-1. `/vuelos/` con `[flights_tracker table="flight_data.vuelos_live"]`
-2. `/mis-vuelos/` con `[flights_tracker_saved table="flight_data.vuelos_live"]`
+1. `/dashboard/` con `[flights_tracker_user_greeting]`
+2. `/vuelos/` con `[flights_tracker table="flight_data.vuelos_live"]`
+3. `/mis-vuelos/` con `[flights_tracker_saved table="flight_data.vuelos_live"]`
 
 Y crea esta página solo para administradores si necesitas comprobar la conexión:
 

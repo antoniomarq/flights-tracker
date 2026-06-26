@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Flights Tracker
  * Description: Buscador móvil de vuelos con guardado por usuario desde la tabla vuelos_live.
- * Version: 0.3.9
+ * Version: 0.3.14
  * Author: Antonio Marquez
  * Text Domain: flights-tracker
  */
@@ -13,11 +13,12 @@ if (!defined('ABSPATH')) {
 
 final class Flights_Tracker_Plugin
 {
-    private const VERSION = '0.3.9';
+    private const VERSION = '0.3.14';
     private const LIVE_TABLE = 'vuelos_live';
     private const NONCE_ACTION = 'flights_tracker_nonce';
     private const PER_PAGE = 25;
     private const ARCHIVE_CRON = 'flights_tracker_archive_due_saved';
+    private $did_render_title_logo = false;
 
     public static function init(): void
     {
@@ -27,10 +28,14 @@ final class Flights_Tracker_Plugin
         register_deactivation_hook(__FILE__, [$plugin, 'deactivate']);
 
         add_action('wp_enqueue_scripts', [$plugin, 'register_assets']);
+        add_action('wp_enqueue_scripts', [$plugin, 'enqueue_site_design_assets'], 20);
         add_action('init', [$plugin, 'maybe_upgrade']);
+        add_filter('render_block', [$plugin, 'prepend_logo_to_page_title'], 10, 2);
+        add_action('wp_footer', [$plugin, 'render_custom_site_footer'], 20);
         add_shortcode('flights_tracker', [$plugin, 'render_tracker_shortcode']);
         add_shortcode('flights_tracker_saved', [$plugin, 'render_saved_shortcode']);
         add_shortcode('flights_tracker_debug', [$plugin, 'render_debug_shortcode']);
+        add_shortcode('flights_tracker_user_greeting', [$plugin, 'render_user_greeting_shortcode']);
 
         add_action('wp_ajax_flights_tracker_search', [$plugin, 'ajax_search']);
         add_action('wp_ajax_nopriv_flights_tracker_search', [$plugin, 'ajax_search']);
@@ -138,6 +143,52 @@ final class Flights_Tracker_Plugin
         wp_register_script('flights-tracker', $base_url . 'assets/js/flights-tracker.js', [], self::VERSION, true);
     }
 
+    public function enqueue_site_design_assets(): void
+    {
+        if (is_admin()) {
+            return;
+        }
+
+        wp_register_style('flights-tracker-site-design', false, [], self::VERSION);
+        wp_enqueue_style('flights-tracker-site-design');
+        wp_add_inline_style('flights-tracker-site-design', $this->site_design_css());
+    }
+
+    public function prepend_logo_to_page_title(string $block_content, array $block): string
+    {
+        if (
+            is_admin()
+            || $this->did_render_title_logo
+            || !is_singular()
+            || ($block['blockName'] ?? '') !== 'core/post-title'
+        ) {
+            return $block_content;
+        }
+
+        $logo = $this->site_logo_markup('ft-page-logo');
+
+        if ($logo === '') {
+            return $block_content;
+        }
+
+        $this->did_render_title_logo = true;
+
+        return $logo . $block_content;
+    }
+
+    public function render_custom_site_footer(): void
+    {
+        if (is_admin() || is_feed() || wp_is_json_request()) {
+            return;
+        }
+
+        printf(
+            '<footer class="ft-site-footer" aria-label="%s"><p class="ft-site-footer__text">%s</p></footer>',
+            esc_attr__('Pie de página', 'flights-tracker'),
+            esc_html(sprintf('© %s Antonio Marquez', wp_date('Y')))
+        );
+    }
+
     public function render_tracker_shortcode($atts): string
     {
         $atts = shortcode_atts([
@@ -158,7 +209,7 @@ final class Flights_Tracker_Plugin
 
         ob_start();
         ?>
-        <div class="ft-app" data-ft-app data-base="<?php echo esc_attr($base); ?>" data-per-page="<?php echo esc_attr((string) $per_page); ?>" data-table="<?php echo esc_attr($table); ?>">
+        <div class="ft-app" data-ft-app data-base="<?php echo esc_attr($base); ?>" data-per-page="<?php echo esc_attr((string) $per_page); ?>" data-table="<?php echo esc_attr($table); ?>" data-ft-ajax-url="<?php echo esc_url(admin_url('admin-ajax.php')); ?>" data-ft-nonce="<?php echo esc_attr(wp_create_nonce(self::NONCE_ACTION)); ?>">
             <form class="ft-search" data-ft-search-form>
                 <label class="ft-search__label" for="<?php echo esc_attr($search_id); ?>">Buscar vuelo</label>
                 <div class="ft-search__row">
@@ -223,7 +274,7 @@ final class Flights_Tracker_Plugin
 
         ob_start();
         ?>
-        <div class="ft-app" data-ft-saved-app data-table="<?php echo esc_attr($table); ?>">
+        <div class="ft-app" data-ft-saved-app data-table="<?php echo esc_attr($table); ?>" data-ft-ajax-url="<?php echo esc_url(admin_url('admin-ajax.php')); ?>" data-ft-nonce="<?php echo esc_attr(wp_create_nonce(self::NONCE_ACTION)); ?>">
             <div class="ft-toolbar">
                 <span data-ft-saved-summary>Cargando tus vuelos guardados...</span>
                 <div class="ft-toolbar__actions">
@@ -250,6 +301,29 @@ final class Flights_Tracker_Plugin
         <?php
 
         return (string) ob_get_clean();
+    }
+
+    public function render_user_greeting_shortcode($atts = []): string
+    {
+        if (!is_user_logged_in()) {
+            return '';
+        }
+
+        $atts = shortcode_atts([
+            'text' => 'Bienvenido',
+        ], $atts, 'flights_tracker_user_greeting');
+
+        wp_enqueue_style('flights-tracker');
+
+        $user = wp_get_current_user();
+        $name = $this->current_user_display_name($user);
+        $label = sanitize_text_field((string) $atts['text']);
+
+        return sprintf(
+            '<p class="ft-user-greeting">%s %s</p>',
+            esc_html($label ?: 'Bienvenido'),
+            esc_html($name)
+        );
     }
 
     public function render_debug_shortcode($atts = []): string
@@ -1326,6 +1400,29 @@ final class Flights_Tracker_Plugin
         return substr($digits, -4);
     }
 
+    private function current_user_display_name(WP_User $user): string
+    {
+        $name = trim((string) $user->first_name);
+
+        if ($name === '') {
+            $name = trim((string) $user->display_name);
+        }
+
+        if ($name === '') {
+            $name = trim((string) $user->user_login);
+        }
+
+        if ($name === '') {
+            return 'Usuario';
+        }
+
+        if (function_exists('mb_convert_case')) {
+            return mb_convert_case($name, MB_CASE_TITLE, 'UTF-8');
+        }
+
+        return ucwords(strtolower($name));
+    }
+
     private function status_type(string $status): string
     {
         $status = strtolower($status);
@@ -1496,6 +1593,78 @@ final class Flights_Tracker_Plugin
         }
 
         return $datetime ? $datetime->getTimestamp() : null;
+    }
+
+    private function site_design_css(): string
+    {
+        return <<<CSS
+body:not(.wp-admin) header.wp-block-template-part .wp-block-navigation,
+body:not(.wp-admin) header.wp-block-template-part .wp-block-site-title,
+body:not(.wp-admin) header.wp-block-template-part .wp-block-navigation__responsive-container-open,
+body:not(.wp-admin) header.wp-block-template-part .wp-block-navigation__responsive-container-close {
+  display: none !important;
+}
+
+body:not(.wp-admin) .wp-site-blocks > footer.wp-block-template-part {
+  display: none !important;
+}
+
+.ft-page-logo {
+  margin: clamp(24px, 7vw, 80px) 0 clamp(12px, 3vw, 24px);
+  text-align: center;
+}
+
+.ft-page-logo .custom-logo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.ft-page-logo img {
+  display: block;
+  width: clamp(112px, 24vw, 190px);
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.ft-site-footer {
+  box-sizing: border-box;
+  width: min(1200px, calc(100% - clamp(40px, 8vw, 96px)));
+  margin: clamp(64px, 10vw, 120px) auto clamp(24px, 5vw, 44px);
+  color: inherit;
+  font-size: clamp(14px, 2.2vw, 18px);
+  text-align: center;
+}
+
+.ft-site-footer__text {
+  margin: 0;
+}
+CSS;
+    }
+
+    private function site_logo_markup(string $class): string
+    {
+        $logo = get_custom_logo();
+
+        if ($logo !== '') {
+            return sprintf('<div class="%s">%s</div>', esc_attr($class), $logo);
+        }
+
+        $site_icon = get_site_icon_url(192);
+
+        if (!$site_icon) {
+            return '';
+        }
+
+        return sprintf(
+            '<div class="%1$s"><a class="custom-logo-link" href="%2$s" rel="home"><img src="%3$s" alt="%4$s"></a></div>',
+            esc_attr($class),
+            esc_url(home_url('/')),
+            esc_url($site_icon),
+            esc_attr(get_bloginfo('name'))
+        );
     }
 
     private function live_table(string $override = ''): string
